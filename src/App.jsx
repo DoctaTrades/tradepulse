@@ -6498,14 +6498,15 @@ function TradePulseApp({ user, onSignOut }) {
       /* ─── MOBILE RESPONSIVE ─── */
       @media (max-width: 768px) {
         /* Header */
-        .tp-header-inner { flex-wrap: wrap !important; height: auto !important; padding: 8px 0 !important; gap: 6px !important; }
+        .tp-header-inner { flex-direction: column !important; height: auto !important; padding: 8px 12px !important; gap: 6px !important; align-items: stretch !important; }
         .tp-brand { display: none !important; }
-        .tp-tabs { overflow-x: auto !important; -webkit-overflow-scrolling: touch; scrollbar-width: none; width: 100% !important; flex-shrink: 0; padding-bottom: 2px; }
+        .tp-header-inner > div:first-child { width: 100%; }
+        .tp-header-right { position: static !important; display: flex !important; justify-content: flex-end !important; padding: 0 0 4px 0 !important; order: -1 !important; gap: 8px !important; }
+        .tp-header-right .tp-new-trade-text { display: none; }
+        .tp-tabs { overflow-x: auto !important; -webkit-overflow-scrolling: touch; scrollbar-width: none; width: 100% !important; flex-shrink: 0; padding-bottom: 2px; display: flex !important; }
         .tp-tabs::-webkit-scrollbar { display: none; }
         .tp-tab-btn { padding: 5px 10px !important; font-size: 11px !important; white-space: nowrap; flex-shrink: 0; }
         .tp-tab-btn span { display: none; }
-        .tp-header-right { position: absolute; right: 12px; top: 8px; }
-        .tp-header-right .tp-new-trade-text { display: none; }
 
         /* Main content */
         .tp-content { padding: 14px 10px !important; }
