@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart, Cell } from "recharts";
-import { TrendingUp, TrendingDown, Plus, X, BookOpen, List, Home, Filter, Award, Target, Activity, Trash2, Eye, ChevronDown, ChevronUp, ChevronRight, Crosshair, Calculator, RefreshCw, Settings, Calendar, DollarSign, BarChart3, Percent, ChevronLeft, Layers, Zap, Camera, Image, CalendarDays, Clipboard, Shield, AlertTriangle, Lightbulb, SkipForward, SkipBack, Upload, Download, Check, FileText, Briefcase, Sun, Moon } from "lucide-react";
+import { TrendingUp, TrendingDown, Plus, X, BookOpen, List, Home, Filter, Award, Target, Activity, Trash2, Eye, ChevronDown, ChevronUp, ChevronRight, Crosshair, Calculator, RefreshCw, Settings, Calendar, DollarSign, BarChart3, Percent, ChevronLeft, Layers, Zap, Camera, Image, CalendarDays, Clipboard, Shield, AlertTriangle, Lightbulb, SkipForward, SkipBack, Upload, Download, Check, FileText, Briefcase, Sun, Moon, Menu } from "lucide-react";
 
 // ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
 import { createClient } from "@supabase/supabase-js";
@@ -6482,6 +6482,7 @@ function TradePulseApp({ user, onSignOut }) {
   const [loaded, setLoaded] = useState(false);
   const [showMigration, setShowMigration] = useState(false);
   const [syncStatus, setSyncStatus] = useState(""); // "" | "saving" | "saved" | "error"
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const theme = THEMES[prefs.theme] || THEMES.dark;
   const isLight = prefs.theme === "light";
@@ -6497,16 +6498,19 @@ function TradePulseApp({ user, onSignOut }) {
 
       /* ─── MOBILE RESPONSIVE ─── */
       @media (max-width: 768px) {
-        /* Header */
-        .tp-header-inner { flex-direction: column !important; height: auto !important; padding: 8px 12px !important; gap: 6px !important; align-items: stretch !important; }
+        /* Header — show hamburger, hide desktop tabs */
+        .tp-header-inner { height: 48px !important; padding: 0 12px !important; }
         .tp-brand { display: none !important; }
-        .tp-header-inner > div:first-child { width: 100%; }
-        .tp-header-right { position: static !important; display: flex !important; justify-content: flex-end !important; padding: 0 0 4px 0 !important; order: -1 !important; gap: 8px !important; }
+        .tp-tabs { display: none !important; }
+        .tp-hamburger { display: flex !important; }
+        .tp-mobile-tab-label { display: block !important; }
+        .tp-signout-btn { display: none !important; }
+        .tp-sync-label span:last-child { display: none; }
         .tp-header-right .tp-new-trade-text { display: none; }
-        .tp-tabs { overflow-x: auto !important; -webkit-overflow-scrolling: touch; scrollbar-width: none; width: 100% !important; flex-shrink: 0; padding-bottom: 2px; display: flex !important; }
-        .tp-tabs::-webkit-scrollbar { display: none; }
-        .tp-tab-btn { padding: 5px 10px !important; font-size: 11px !important; white-space: nowrap; flex-shrink: 0; }
-        .tp-tab-btn span { display: none; }
+
+        /* Mobile menu */
+        .tp-mobile-overlay { display: block !important; }
+        .tp-mobile-menu { display: flex !important; }
 
         /* Main content */
         .tp-content { padding: 14px 10px !important; }
@@ -6570,7 +6574,6 @@ function TradePulseApp({ user, onSignOut }) {
       }
 
       @media (max-width: 480px) {
-        .tp-tab-btn { padding: 5px 8px !important; font-size: 10px !important; }
         .tp-stat-grid { grid-template-columns: 1fr 1fr !important; }
         .tp-goals-stats-grid { grid-template-columns: 1fr 1fr 1fr !important; }
         .tp-modal-grid4 { grid-template-columns: 1fr !important; }
@@ -6670,11 +6673,19 @@ function TradePulseApp({ user, onSignOut }) {
     ><Plus size={15}/> New Trade</button>
   );
 
+  const activeTab = tabs.find(t => t.id === tab);
+
   return (
     <div className="tp-root" style={{ minHeight:"100vh", background:theme.bg, color:theme.text, fontFamily:"'Inter', system-ui, sans-serif" }}>
       <div style={{ background:theme.headerBg, borderBottom:`1px solid ${theme.headerBorder}`, padding:"0 24px", position:"sticky", top:0, zIndex:50, backdropFilter:"blur(10px)" }}>
         <div className="tp-header-inner" style={{ maxWidth:1100, margin:"0 auto", display:"flex", alignItems:"center", justifyContent:"space-between", height:58, position:"relative" }}>
           <div style={{ display:"flex", alignItems:"center", gap:24 }}>
+            {/* Hamburger button — mobile only */}
+            <button className="tp-hamburger" onClick={()=>setMobileMenuOpen(p=>!p)} style={{ display:"none", alignItems:"center", justifyContent:"center", width:36, height:36, borderRadius:8, border:"none", background:"transparent", color:theme.textMuted, cursor:"pointer", padding:0 }}>
+              {mobileMenuOpen ? <X size={20}/> : <Menu size={20}/>}
+            </button>
+            {/* Active tab label — mobile only */}
+            <span className="tp-mobile-tab-label" style={{ display:"none", fontSize:15, fontWeight:700, color:theme.text }}>{activeTab?.label || "Dashboard"}</span>
             <div className="tp-brand" style={{ display:"flex", alignItems:"center", gap:9 }}>
               <div style={{ width:30, height:30, borderRadius:8, background:"linear-gradient(135deg,#6366f1,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center" }}><BookOpen size={16} color="#fff"/></div>
               <span style={{ fontSize:17, fontWeight:700, letterSpacing:-0.5, color:theme.text }}>TradePulse</span>
@@ -6684,13 +6695,42 @@ function TradePulseApp({ user, onSignOut }) {
             </div>
           </div>
           <div className="tp-header-right" style={{ display:"flex", alignItems:"center", gap:10 }}>
-            {syncStatus === "saving" && <span style={{ fontSize:10, color:"#eab308", display:"flex", alignItems:"center", gap:4 }}><span style={{ width:6, height:6, borderRadius:3, background:"#eab308", display:"inline-block", animation:"spin 1s linear infinite" }}/> Syncing</span>}
-            {syncStatus === "saved" && <span style={{ fontSize:10, color:"#4ade80", display:"flex", alignItems:"center", gap:4 }}><Check size={10}/> Saved</span>}
-            <button onClick={onSignOut} style={{ padding:"4px 10px", borderRadius:6, border:`1px solid ${theme.borderLight}`, background:"transparent", color:theme.textFaint, cursor:"pointer", fontSize:10, fontWeight:600 }} title={user.email}>Sign Out</button>
+            {syncStatus === "saving" && <span className="tp-sync-label" style={{ fontSize:10, color:"#eab308", display:"flex", alignItems:"center", gap:4 }}><span style={{ width:6, height:6, borderRadius:3, background:"#eab308", display:"inline-block", animation:"spin 1s linear infinite" }}/> Syncing</span>}
+            {syncStatus === "saved" && <span className="tp-sync-label" style={{ fontSize:10, color:"#4ade80", display:"flex", alignItems:"center", gap:4 }}><Check size={10}/> Saved</span>}
+            <button className="tp-signout-btn" onClick={onSignOut} style={{ padding:"4px 10px", borderRadius:6, border:`1px solid ${theme.borderLight}`, background:"transparent", color:theme.textFaint, cursor:"pointer", fontSize:10, fontWeight:600 }} title={user.email}>Sign Out</button>
             {headerBtn}
           </div>
         </div>
       </div>
+
+      {/* Mobile slide-out menu */}
+      {mobileMenuOpen && <>
+        <div className="tp-mobile-overlay" onClick={()=>setMobileMenuOpen(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:60, display:"none" }}/>
+        <div className="tp-mobile-menu" style={{ position:"fixed", top:0, left:0, bottom:0, width:260, background:theme.bgSecondary, borderRight:`1px solid ${theme.border}`, zIndex:70, padding:"20px 0", display:"none", flexDirection:"column", boxShadow:"4px 0 30px rgba(0,0,0,0.4)" }}>
+          {/* Menu header */}
+          <div style={{ padding:"0 20px 18px", borderBottom:`1px solid ${theme.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:9 }}>
+              <div style={{ width:28, height:28, borderRadius:7, background:"linear-gradient(135deg,#6366f1,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center" }}><BookOpen size={14} color="#fff"/></div>
+              <span style={{ fontSize:16, fontWeight:700, color:theme.text }}>TradePulse</span>
+            </div>
+            <button onClick={()=>setMobileMenuOpen(false)} style={{ background:"none", border:"none", color:theme.textFaint, cursor:"pointer", padding:4 }}><X size={18}/></button>
+          </div>
+          {/* Tab list */}
+          <div style={{ flex:1, overflowY:"auto", padding:"12px 10px" }}>
+            {tabs.map(t => (
+              <button key={t.id} onClick={()=>{setTab(t.id);setMobileMenuOpen(false);}} style={{ display:"flex", alignItems:"center", gap:12, width:"100%", padding:"12px 14px", borderRadius:10, border:"none", background:tab===t.id?theme.activeBg:"transparent", color:tab===t.id?"#a5b4fc":theme.textMuted, cursor:"pointer", fontSize:14, fontWeight:tab===t.id?600:500, marginBottom:2, transition:"all 0.15s" }}>
+                <t.icon size={16}/> {t.label}
+              </button>
+            ))}
+          </div>
+          {/* Menu footer */}
+          <div style={{ padding:"14px 20px", borderTop:`1px solid ${theme.border}` }}>
+            <div style={{ fontSize:11, color:theme.textFaintest, marginBottom:8, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{user.email}</div>
+            <button onClick={()=>{onSignOut();setMobileMenuOpen(false);}} style={{ display:"flex", alignItems:"center", gap:6, width:"100%", padding:"9px 14px", borderRadius:8, border:`1px solid ${theme.borderLight}`, background:"transparent", color:theme.textFaint, cursor:"pointer", fontSize:12, fontWeight:600 }}>Sign Out</button>
+          </div>
+        </div>
+      </>}
+
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
         {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
