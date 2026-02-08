@@ -2,7 +2,13 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart, Cell } from "recharts";
 import { TrendingUp, TrendingDown, Plus, X, BookOpen, List, Home, Filter, Award, Target, Activity, Trash2, Eye, ChevronDown, ChevronUp, ChevronRight, Crosshair, Calculator, RefreshCw, Settings, Calendar, DollarSign, BarChart3, Percent, ChevronLeft, Layers, Zap, Camera, Image, CalendarDays, Clipboard, Shield, AlertTriangle, Lightbulb, SkipForward, SkipBack, Upload, Download, Check, FileText, Briefcase, Sun, Moon } from "lucide-react";
 
-// ─── STORAGE ──────────────────────────────────────────────────────────────────
+// ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
+import { createClient } from "@supabase/supabase-js";
+const SUPABASE_URL = "https://odpgrgyiivbcbbqcdkxm.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9kcGdyZ3lpaXZiY2JicWNka3htIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1MTA1MjcsImV4cCI6MjA4NjA4NjUyN30.PqDzDUIxav7F_dZbp_BWWRt4J1wUjugl2QOH7gxZz_A";
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ─── LOCAL STORAGE (fallback + migration source) ────────────────────────────
 const STORAGE_KEY = "tj-trades";
 const WATCHLIST_KEY = "tj-watchlists";
 const WHEEL_KEY = "tj-wheel";
@@ -14,8 +20,170 @@ const PREFS_KEY = "tj-prefs";
 const JOURNAL_KEY = "tj-journal";
 const GOALS_KEY = "tj-goals";
 const DIVIDENDS_KEY = "tj-dividends";
-async function loadData(key) { try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : []; } catch { return []; } }
-async function saveData(key, data) { try { await window.storage.set(key, JSON.stringify(data)); } catch (e) { console.error(e); } }
+
+// Local storage helpers (used for migration + offline cache)
+function localLoad(key) { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch { return null; } }
+function localSave(key, data) { try { localStorage.setItem(key, JSON.stringify(data)); } catch(e) { console.error(e); } }
+
+// Check if any local data exists (for migration prompt)
+function hasLocalData() {
+  return !!(localLoad(STORAGE_KEY)?.length || localLoad(JOURNAL_KEY)?.length || localLoad(WATCHLIST_KEY)?.length || localLoad(WHEEL_KEY)?.length || localLoad(PLAYBOOK_KEY)?.length || localLoad(DIVIDENDS_KEY)?.length);
+}
+
+function getLocalData() {
+  return {
+    trades: localLoad(STORAGE_KEY) || [],
+    watchlists: localLoad(WATCHLIST_KEY) || [],
+    wheel_trades: localLoad(WHEEL_KEY) || [],
+    futures_settings: localLoad(FUTURES_SETTINGS_KEY) || [],
+    custom_fields: localLoad(CUSTOM_FIELDS_KEY) || {},
+    account_balances: localLoad(ACCOUNT_BALANCES_KEY) || {},
+    playbooks: localLoad(PLAYBOOK_KEY) || [],
+    journal: localLoad(JOURNAL_KEY) || [],
+    goals: localLoad(GOALS_KEY) || {},
+    dividends: localLoad(DIVIDENDS_KEY) || [],
+    prefs: localLoad(PREFS_KEY) || { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] }
+  };
+}
+
+// ─── CLOUD SYNC FUNCTIONS ───────────────────────────────────────────────────
+async function cloudLoad(userId) {
+  const { data, error } = await supabase.from("user_data").select("*").eq("user_id", userId).single();
+  if (error && error.code === "PGRST116") return null; // No row yet
+  if (error) { console.error("Cloud load error:", error); return null; }
+  return data;
+}
+
+async function cloudSave(userId, field, value) {
+  const { error } = await supabase.from("user_data").upsert({ user_id: userId, [field]: value }, { onConflict: "user_id" });
+  if (error) console.error(`Cloud save error (${field}):`, error);
+}
+
+async function cloudSaveAll(userId, allData) {
+  const { error } = await supabase.from("user_data").upsert({ user_id: userId, ...allData }, { onConflict: "user_id" });
+  if (error) console.error("Cloud save all error:", error);
+}
+
+// ─── AUTH SCREEN ────────────────────────────────────────────────────────────
+function AuthScreen({ onAuth }) {
+  const [mode, setMode] = useState("login"); // login | signup | forgot
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError("");
+    const { data, error: err } = await supabase.auth.signInWithPassword({ email, password });
+    if (err) setError(err.message);
+    else onAuth(data.user);
+    setLoading(false);
+  };
+
+  const handleSignup = async (e) => {
+    e.preventDefault();
+    if (password !== confirmPassword) { setError("Passwords don't match"); return; }
+    if (password.length < 6) { setError("Password must be at least 6 characters"); return; }
+    setLoading(true); setError("");
+    const { data, error: err } = await supabase.auth.signUp({ email, password });
+    if (err) setError(err.message);
+    else if (data.user && !data.user.confirmed_at && !data.session) {
+      setMessage("Check your email for a confirmation link!");
+      setMode("login");
+    } else if (data.user) onAuth(data.user);
+    setLoading(false);
+  };
+
+  const handleForgot = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError("");
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email);
+    if (err) setError(err.message);
+    else { setMessage("Password reset email sent!"); setMode("login"); }
+    setLoading(false);
+  };
+
+  const inputStyle = { width:"100%", padding:"12px 16px", background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.08)", borderRadius:10, color:"#e2e8f0", fontSize:14, outline:"none", boxSizing:"border-box" };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"linear-gradient(135deg, #0c0e14 0%, #131620 50%, #0f1118 100%)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Inter', -apple-system, sans-serif" }}>
+      <div style={{ width:"min(92vw, 420px)", padding:36, background:"rgba(255,255,255,0.02)", border:"1px solid rgba(255,255,255,0.06)", borderRadius:20, boxShadow:"0 24px 80px rgba(0,0,0,0.5)" }}>
+        {/* Logo */}
+        <div style={{ textAlign:"center", marginBottom:32 }}>
+          <div style={{ fontSize:32, fontWeight:800, background:"linear-gradient(135deg, #6366f1, #8b5cf6, #a78bfa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", marginBottom:6 }}>TradePulse</div>
+          <div style={{ fontSize:13, color:"#6b7280" }}>Your trading journal, everywhere</div>
+        </div>
+
+        {message && <div style={{ padding:"12px 16px", background:"rgba(74,222,128,0.08)", border:"1px solid rgba(74,222,128,0.2)", borderRadius:10, marginBottom:16, fontSize:13, color:"#4ade80" }}>{message}</div>}
+        {error && <div style={{ padding:"12px 16px", background:"rgba(248,113,113,0.08)", border:"1px solid rgba(248,113,113,0.2)", borderRadius:10, marginBottom:16, fontSize:13, color:"#f87171" }}>{error}</div>}
+
+        <form onSubmit={mode === "login" ? handleLogin : mode === "signup" ? handleSignup : handleForgot}>
+          <div style={{ marginBottom:14 }}>
+            <label style={{ fontSize:11, color:"#6b7280", textTransform:"uppercase", letterSpacing:0.8, display:"block", marginBottom:6 }}>Email</label>
+            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@email.com" required style={inputStyle} autoComplete="email"/>
+          </div>
+
+          {mode !== "forgot" && (
+            <div style={{ marginBottom:14 }}>
+              <label style={{ fontSize:11, color:"#6b7280", textTransform:"uppercase", letterSpacing:0.8, display:"block", marginBottom:6 }}>Password</label>
+              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" required style={inputStyle} autoComplete={mode==="login"?"current-password":"new-password"}/>
+            </div>
+          )}
+
+          {mode === "signup" && (
+            <div style={{ marginBottom:14 }}>
+              <label style={{ fontSize:11, color:"#6b7280", textTransform:"uppercase", letterSpacing:0.8, display:"block", marginBottom:6 }}>Confirm Password</label>
+              <input type="password" value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} placeholder="••••••••" required style={inputStyle} autoComplete="new-password"/>
+            </div>
+          )}
+
+          <button type="submit" disabled={loading} style={{ width:"100%", padding:"13px 0", borderRadius:10, border:"none", background:"linear-gradient(135deg, #6366f1, #8b5cf6)", color:"#fff", fontSize:14, fontWeight:700, cursor:loading?"default":"pointer", opacity:loading?0.7:1, marginTop:4, boxShadow:"0 4px 20px rgba(99,102,241,0.3)" }}>
+            {loading ? "..." : mode === "login" ? "Sign In" : mode === "signup" ? "Create Account" : "Send Reset Link"}
+          </button>
+        </form>
+
+        <div style={{ marginTop:20, textAlign:"center", fontSize:13 }}>
+          {mode === "login" && <>
+            <span style={{ color:"#6b7280" }}>Don't have an account? </span>
+            <button onClick={()=>{setMode("signup");setError("");}} style={{ background:"none", border:"none", color:"#a5b4fc", cursor:"pointer", fontSize:13, fontWeight:600 }}>Sign Up</button>
+            <div style={{ marginTop:8 }}>
+              <button onClick={()=>{setMode("forgot");setError("");}} style={{ background:"none", border:"none", color:"#6b7280", cursor:"pointer", fontSize:12 }}>Forgot password?</button>
+            </div>
+          </>}
+          {mode === "signup" && <>
+            <span style={{ color:"#6b7280" }}>Already have an account? </span>
+            <button onClick={()=>{setMode("login");setError("");}} style={{ background:"none", border:"none", color:"#a5b4fc", cursor:"pointer", fontSize:13, fontWeight:600 }}>Sign In</button>
+          </>}
+          {mode === "forgot" && <>
+            <button onClick={()=>{setMode("login");setError("");}} style={{ background:"none", border:"none", color:"#a5b4fc", cursor:"pointer", fontSize:13, fontWeight:600 }}>Back to Sign In</button>
+          </>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── MIGRATION PROMPT ───────────────────────────────────────────────────────
+function MigrationPrompt({ onMigrate, onSkip }) {
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:300, backdropFilter:"blur(4px)" }}>
+      <div style={{ background:"#1a1d28", borderRadius:18, width:"min(92vw, 460px)", padding:32, border:"1px solid rgba(255,255,255,0.08)", boxShadow:"0 24px 60px rgba(0,0,0,0.5)", textAlign:"center" }}>
+        <Upload size={40} color="#a5b4fc" style={{ marginBottom:16 }}/>
+        <h3 style={{ color:"#e2e8f0", fontSize:18, fontWeight:700, margin:"0 0 8px" }}>Existing Data Found</h3>
+        <p style={{ color:"#9ca3af", fontSize:13, lineHeight:1.6, margin:"0 0 24px" }}>
+          We found trade data saved on this device from before you created your account. Would you like to import it into your cloud account so it syncs across all your devices?
+        </p>
+        <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
+          <button onClick={onSkip} style={{ padding:"10px 24px", borderRadius:10, border:"1px solid rgba(255,255,255,0.1)", background:"transparent", color:"#9ca3af", cursor:"pointer", fontSize:13, fontWeight:600 }}>Skip</button>
+          <button onClick={onMigrate} style={{ padding:"10px 28px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:700, boxShadow:"0 4px 14px rgba(99,102,241,0.3)" }}>Import to Cloud</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ─── THEME SYSTEM ────────────────────────────────────────────────────────────
 const THEMES = {
@@ -6233,6 +6401,40 @@ function FuturesPresetModal({ onSave, onClose, editPreset }) {
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [showMigration, setShowMigration] = useState(false);
+
+  // Check for existing session on mount
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user || null);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user || null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (authLoading) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#0c0e14", display:"flex", alignItems:"center", justifyContent:"center" }}>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ width:40, height:40, border:"3px solid rgba(99,102,241,0.2)", borderTop:"3px solid #6366f1", borderRadius:"50%", margin:"0 auto 16px", animation:"spin 1s linear infinite" }}/>
+          <div style={{ color:"#6b7280", fontSize:13 }}>Loading TradePulse...</div>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) return <AuthScreen onAuth={setUser}/>;
+
+  return <TradePulseApp user={user} onSignOut={async () => { await supabase.auth.signOut(); setUser(null); }}/>;
+}
+
+function TradePulseApp({ user, onSignOut }) {
   const [trades, setTrades] = useState([]);
   const [watchlists, setWatchlists] = useState([]);
   const [wheelTrades, setWheelTrades] = useState([]);
@@ -6248,6 +6450,8 @@ export default function App() {
   const [showTradeModal, setShowTradeModal] = useState(false);
   const [editingTrade, setEditingTrade] = useState(null);
   const [loaded, setLoaded] = useState(false);
+  const [showMigration, setShowMigration] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(""); // "" | "saving" | "saved" | "error"
 
   const theme = THEMES[prefs.theme] || THEMES.dark;
   const isLight = prefs.theme === "light";
@@ -6344,18 +6548,74 @@ export default function App() {
     `;
   }, [theme]);
 
-  useEffect(() => { Promise.all([loadData(STORAGE_KEY),loadData(WATCHLIST_KEY),loadData(WHEEL_KEY),loadData(FUTURES_SETTINGS_KEY),loadData(CUSTOM_FIELDS_KEY),loadData(ACCOUNT_BALANCES_KEY),loadData(PLAYBOOK_KEY),loadData(PREFS_KEY),loadData(JOURNAL_KEY),loadData(GOALS_KEY),loadData(DIVIDENDS_KEY)]).then(([t,w,wh,f,c,ab,pb,pr,jn,gl,dv])=>{setTrades(t);setWatchlists(w);setWheelTrades(wh);setFuturesSettings(f);setCustomFields(c && Object.keys(c).length > 0 ? c : DEFAULT_CUSTOM_FIELDS);setAccountBalances(ab && typeof ab === "object" && !Array.isArray(ab) ? ab : {});setPlaybooks(Array.isArray(pb) ? pb : []);setPrefs(pr && typeof pr === "object" && !Array.isArray(pr) ? { theme: pr.theme || "dark", logo: pr.logo || "", banner: pr.banner || "", tabOrder: Array.isArray(pr.tabOrder) ? pr.tabOrder : [], dashWidgets: Array.isArray(pr.dashWidgets) ? pr.dashWidgets : [] } : { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });setJournal(Array.isArray(jn) ? jn : []);setGoals(gl && typeof gl === "object" && !Array.isArray(gl) ? gl : {});setDividends(Array.isArray(dv) ? dv : []);setLoaded(true);}); }, []);
-  useEffect(() => { if(loaded) saveData(STORAGE_KEY, trades); }, [trades, loaded]);
-  useEffect(() => { if(loaded) saveData(WATCHLIST_KEY, watchlists); }, [watchlists, loaded]);
-  useEffect(() => { if(loaded) saveData(WHEEL_KEY, wheelTrades); }, [wheelTrades, loaded]);
-  useEffect(() => { if(loaded) saveData(FUTURES_SETTINGS_KEY, futuresSettings); }, [futuresSettings, loaded]);
-  useEffect(() => { if(loaded) saveData(CUSTOM_FIELDS_KEY, customFields); }, [customFields, loaded]);
-  useEffect(() => { if(loaded) saveData(ACCOUNT_BALANCES_KEY, accountBalances); }, [accountBalances, loaded]);
-  useEffect(() => { if(loaded) saveData(PLAYBOOK_KEY, playbooks); }, [playbooks, loaded]);
-  useEffect(() => { if(loaded) saveData(JOURNAL_KEY, journal); }, [journal, loaded]);
-  useEffect(() => { if(loaded) saveData(GOALS_KEY, goals); }, [goals, loaded]);
-  useEffect(() => { if(loaded) saveData(DIVIDENDS_KEY, dividends); }, [dividends, loaded]);
-  useEffect(() => { if(loaded) saveData(PREFS_KEY, prefs); }, [prefs, loaded]);
+  // ─── LOAD DATA FROM CLOUD ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      const cloud = await cloudLoad(user.id);
+      if (cloud) {
+        setTrades(Array.isArray(cloud.trades) ? cloud.trades : []);
+        setWatchlists(Array.isArray(cloud.watchlists) ? cloud.watchlists : []);
+        setWheelTrades(Array.isArray(cloud.wheel_trades) ? cloud.wheel_trades : []);
+        setFuturesSettings(Array.isArray(cloud.futures_settings) ? cloud.futures_settings : []);
+        setCustomFields(cloud.custom_fields && typeof cloud.custom_fields === "object" && Object.keys(cloud.custom_fields).length > 0 ? cloud.custom_fields : DEFAULT_CUSTOM_FIELDS);
+        setAccountBalances(cloud.account_balances && typeof cloud.account_balances === "object" && !Array.isArray(cloud.account_balances) ? cloud.account_balances : {});
+        setPlaybooks(Array.isArray(cloud.playbooks) ? cloud.playbooks : []);
+        setJournal(Array.isArray(cloud.journal) ? cloud.journal : []);
+        setGoals(cloud.goals && typeof cloud.goals === "object" && !Array.isArray(cloud.goals) ? cloud.goals : {});
+        setDividends(Array.isArray(cloud.dividends) ? cloud.dividends : []);
+        const pr = cloud.prefs;
+        setPrefs(pr && typeof pr === "object" && !Array.isArray(pr) ? { theme: pr.theme || "dark", logo: pr.logo || "", banner: pr.banner || "", tabOrder: Array.isArray(pr.tabOrder) ? pr.tabOrder : [], dashWidgets: Array.isArray(pr.dashWidgets) ? pr.dashWidgets : [] } : { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });
+      }
+      // Check for local data to migrate (only if cloud is empty or doesn't exist)
+      if (!cloud && hasLocalData()) {
+        setShowMigration(true);
+        // Still load local data so user sees it immediately
+        const local = getLocalData();
+        setTrades(local.trades); setWatchlists(local.watchlists); setWheelTrades(local.wheel_trades);
+        setFuturesSettings(local.futures_settings); setCustomFields(local.custom_fields && Object.keys(local.custom_fields).length > 0 ? local.custom_fields : DEFAULT_CUSTOM_FIELDS);
+        setAccountBalances(local.account_balances); setPlaybooks(local.playbooks); setJournal(local.journal);
+        setGoals(local.goals); setDividends(local.dividends); setPrefs(local.prefs);
+      }
+      setLoaded(true);
+    })();
+  }, [user]);
+
+  // ─── MIGRATION HANDLER ────────────────────────────────────────────────────
+  const handleMigrate = async () => {
+    const local = getLocalData();
+    await cloudSaveAll(user.id, local);
+    setShowMigration(false);
+  };
+
+  // ─── SAVE TO CLOUD (debounced per field) ──────────────────────────────────
+  const saveTimeout = useMemo(() => ({}), []);
+  const debouncedCloudSave = useCallback((field, value) => {
+    if (!user || !loaded) return;
+    // Also save locally as cache
+    const keyMap = { trades: STORAGE_KEY, watchlists: WATCHLIST_KEY, wheel_trades: WHEEL_KEY, futures_settings: FUTURES_SETTINGS_KEY, custom_fields: CUSTOM_FIELDS_KEY, account_balances: ACCOUNT_BALANCES_KEY, playbooks: PLAYBOOK_KEY, journal: JOURNAL_KEY, goals: GOALS_KEY, dividends: DIVIDENDS_KEY, prefs: PREFS_KEY };
+    if (keyMap[field]) localSave(keyMap[field], value);
+    // Debounce cloud save (500ms)
+    clearTimeout(saveTimeout[field]);
+    setSyncStatus("saving");
+    saveTimeout[field] = setTimeout(async () => {
+      await cloudSave(user.id, field, value);
+      setSyncStatus("saved");
+      setTimeout(() => setSyncStatus(""), 2000);
+    }, 500);
+  }, [user, loaded]);
+
+  useEffect(() => { debouncedCloudSave("trades", trades); }, [trades]);
+  useEffect(() => { debouncedCloudSave("watchlists", watchlists); }, [watchlists]);
+  useEffect(() => { debouncedCloudSave("wheel_trades", wheelTrades); }, [wheelTrades]);
+  useEffect(() => { debouncedCloudSave("futures_settings", futuresSettings); }, [futuresSettings]);
+  useEffect(() => { debouncedCloudSave("custom_fields", customFields); }, [customFields]);
+  useEffect(() => { debouncedCloudSave("account_balances", accountBalances); }, [accountBalances]);
+  useEffect(() => { debouncedCloudSave("playbooks", playbooks); }, [playbooks]);
+  useEffect(() => { debouncedCloudSave("journal", journal); }, [journal]);
+  useEffect(() => { debouncedCloudSave("goals", goals); }, [goals]);
+  useEffect(() => { debouncedCloudSave("dividends", dividends); }, [dividends]);
+  useEffect(() => { debouncedCloudSave("prefs", prefs); }, [prefs]);
 
   const handleTradeSave = useCallback(trade => {
     setTrades(prev => { const idx=prev.findIndex(t=>t.id===trade.id); if(idx>=0){const u=[...prev];u[idx]=trade;return u;} return [trade,...prev]; });
@@ -6393,6 +6653,9 @@ export default function App() {
             </div>
           </div>
           <div className="tp-header-right" style={{ display:"flex", alignItems:"center", gap:10 }}>
+            {syncStatus === "saving" && <span style={{ fontSize:10, color:"#eab308", display:"flex", alignItems:"center", gap:4 }}><span style={{ width:6, height:6, borderRadius:3, background:"#eab308", display:"inline-block", animation:"spin 1s linear infinite" }}/> Syncing</span>}
+            {syncStatus === "saved" && <span style={{ fontSize:10, color:"#4ade80", display:"flex", alignItems:"center", gap:4 }}><Check size={10}/> Saved</span>}
+            <button onClick={onSignOut} style={{ padding:"4px 10px", borderRadius:6, border:`1px solid ${theme.borderLight}`, background:"transparent", color:theme.textFaint, cursor:"pointer", fontSize:10, fontWeight:600 }} title={user.email}>Sign Out</button>
             {headerBtn}
           </div>
         </div>
@@ -6410,6 +6673,7 @@ export default function App() {
         {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme}/>}
       </div>
       {showTradeModal && <TradeModal onSave={handleTradeSave} onClose={()=>{setShowTradeModal(false);setEditingTrade(null);}} editTrade={editingTrade} futuresSettings={futuresSettings} customFields={customFields} playbooks={playbooks} theme={theme}/>}
+      {showMigration && <MigrationPrompt onMigrate={handleMigrate} onSkip={()=>setShowMigration(false)}/>}
     </div>
   );
 }
