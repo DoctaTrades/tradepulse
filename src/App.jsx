@@ -13,6 +13,7 @@ const PLAYBOOK_KEY = "tj-playbooks";
 const PREFS_KEY = "tj-prefs";
 const JOURNAL_KEY = "tj-journal";
 const GOALS_KEY = "tj-goals";
+const DIVIDENDS_KEY = "tj-dividends";
 async function loadData(key) { try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : []; } catch { return []; } }
 async function saveData(key, data) { try { await window.storage.set(key, JSON.stringify(data)); } catch (e) { console.error(e); } }
 
@@ -1011,7 +1012,405 @@ const DEFAULT_DASH_WIDGETS = [
   { id:"breakdown", label:"Daily / Monthly Breakdown", visible:true },
 ];
 
-function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets }) {
+// ─── PRE-TRADE RISK CALCULATOR ──────────────────────────────────────────────
+function RiskCalculator({ theme, accountBalances, futuresSettings, customFields }) {
+  const [selectedAccount, setSelectedAccount] = useState("");
+  const [accountSize, setAccountSize] = useState("");
+  const [assetType, setAssetType] = useState("Stock"); // Stock | Options | Futures
+  const [direction, setDirection] = useState("Long");
+  const [riskPct, setRiskPct] = useState("1");
+
+  // Stock fields
+  const [entryPrice, setEntryPrice] = useState("");
+  const [stopLoss, setStopLoss] = useState("");
+
+  // Options fields
+  const [optPremium, setOptPremium] = useState("");
+  const [optStopPremium, setOptStopPremium] = useState("");
+  const [optContracts, setOptContracts] = useState("");
+
+  // Futures fields
+  const [futContract, setFutContract] = useState("");
+  const [futEntry, setFutEntry] = useState("");
+  const [futStop, setFutStop] = useState("");
+  const [futTickSize, setFutTickSize] = useState("");
+  const [futTickValue, setFutTickValue] = useState("");
+  const [futMode, setFutMode] = useState("manual"); // manual | auto
+  const [futNumContracts, setFutNumContracts] = useState("1");
+
+  // Account names from balances + custom fields
+  const allAccounts = useMemo(() => {
+    const set = new Set();
+    if (accountBalances) Object.keys(accountBalances).forEach(k => set.add(k));
+    if (customFields?.accounts) customFields.accounts.forEach(k => set.add(k));
+    return [...set];
+  }, [accountBalances, customFields]);
+
+  // Auto-fill account size when account selected
+  useEffect(() => {
+    if (selectedAccount && accountBalances && accountBalances[selectedAccount]) {
+      setAccountSize(String(parseFloat(accountBalances[selectedAccount]) || ""));
+    }
+  }, [selectedAccount, accountBalances]);
+
+  // Auto-fill on first load
+  useEffect(() => {
+    if (!accountSize && accountBalances && typeof accountBalances === "object") {
+      const entries = Object.entries(accountBalances);
+      if (entries.length > 0) {
+        const [name, val] = entries.reduce((a, b) => (parseFloat(b[1]) || 0) > (parseFloat(a[1]) || 0) ? b : a);
+        setSelectedAccount(name);
+        setAccountSize(String(parseFloat(val) || ""));
+      }
+    }
+  }, [accountBalances]);
+
+  // Auto-fill futures preset
+  useEffect(() => {
+    if (futContract && futuresSettings) {
+      const preset = futuresSettings.find(f => f.name === futContract);
+      if (preset) {
+        setFutTickSize(String(preset.tickSize || ""));
+        setFutTickValue(String(preset.tickValue || ""));
+      }
+    }
+  }, [futContract, futuresSettings]);
+
+  const acct = parseFloat(accountSize) || 0;
+  const risk = parseFloat(riskPct) || 0;
+  const dollarRisk = acct > 0 && risk > 0 ? acct * (risk / 100) : 0;
+
+  // ── Stock calculations ──
+  const stockEntry = parseFloat(entryPrice) || 0;
+  const stockStop = parseFloat(stopLoss) || 0;
+  const stockRiskPerShare = direction === "Long" ? stockEntry - stockStop : stockStop - stockEntry;
+  const stockValid = acct > 0 && stockEntry > 0 && stockStop > 0 && risk > 0 && stockRiskPerShare > 0;
+  const stockShares = stockValid ? Math.floor(dollarRisk / stockRiskPerShare) : 0;
+  const stockPosValue = stockShares * stockEntry;
+  const stockPctOfAcct = acct > 0 ? (stockPosValue / acct) * 100 : 0;
+  const stockR1 = stockValid ? (direction === "Long" ? stockEntry + stockRiskPerShare : stockEntry - stockRiskPerShare) : 0;
+  const stockR2 = stockValid ? (direction === "Long" ? stockEntry + stockRiskPerShare*2 : stockEntry - stockRiskPerShare*2) : 0;
+  const stockR3 = stockValid ? (direction === "Long" ? stockEntry + stockRiskPerShare*3 : stockEntry - stockRiskPerShare*3) : 0;
+
+  // ── Options calculations ──
+  const oPrem = parseFloat(optPremium) || 0;
+  const oStopPrem = parseFloat(optStopPremium) || 0;
+  const oContracts = parseInt(optContracts) || 0;
+  const oRiskPerContract = (oPrem - oStopPrem) * 100; // each contract = 100 shares
+  const oMaxRiskPerContract = oPrem * 100; // if riding to zero
+  const optValid = acct > 0 && oPrem > 0 && risk > 0;
+  const optContractsCalc = oStopPrem > 0 && oRiskPerContract > 0
+    ? Math.floor(dollarRisk / oRiskPerContract)
+    : oMaxRiskPerContract > 0 ? Math.floor(dollarRisk / oMaxRiskPerContract) : 0;
+  const optActualContracts = oContracts > 0 ? oContracts : optContractsCalc;
+  const optTotalCost = optActualContracts * oPrem * 100;
+  const optTotalRisk = oStopPrem > 0 ? optActualContracts * oRiskPerContract : optTotalCost;
+  const optPctOfAcct = acct > 0 ? (optTotalCost / acct) * 100 : 0;
+  // Options R targets (premium-based)
+  const oR1 = optValid ? oPrem + (oPrem - oStopPrem || oPrem) : 0;
+  const oR2 = optValid ? oPrem + (oPrem - oStopPrem || oPrem) * 2 : 0;
+  const oR3 = optValid ? oPrem + (oPrem - oStopPrem || oPrem) * 3 : 0;
+
+  // ── Futures calculations (dual mode) ──
+  // Key: all prices must align to tick size. Risk is measured in ticks, then converted to $.
+  // tick_count = price_distance / tick_size (always whole ticks)
+  // dollar_risk_per_contract = tick_count × tick_value
+  const fEntry = parseFloat(futEntry) || 0;
+  const fTickSize = parseFloat(futTickSize) || 0;
+  const fTickValue = parseFloat(futTickValue) || 0;
+  const fContracts = parseInt(futNumContracts) || 1;
+
+  // Helper: snap a price to nearest valid tick
+  const snapPrice = (price) => fTickSize > 0 ? Math.round(price / fTickSize) * fTickSize : price;
+
+  // AUTO MODE: compute stop from risk %
+  // dollarRisk / (contracts × tickValue) = max ticks per contract → snap to whole ticks → stop = entry ∓ (ticks × tickSize)
+  const fAutoRawTicks = (dollarRisk > 0 && fContracts > 0 && fTickValue > 0) ? dollarRisk / (fContracts * fTickValue) : 0;
+  const fAutoTicks = Math.max(0, Math.floor(fAutoRawTicks)); // whole ticks only, min 0
+  const fAutoStopDistance = fAutoTicks * fTickSize; // points
+  const fAutoStop = (fEntry > 0 && fAutoTicks > 0 && fTickSize > 0)
+    ? snapPrice(direction === "Long" ? fEntry - fAutoStopDistance : fEntry + fAutoStopDistance) : 0;
+  const fAutoRiskPerContract = fAutoTicks * fTickValue;
+  const fAutoTotalRisk = fContracts * fAutoRiskPerContract;
+  const fAutoValid = futMode === "auto" && acct > 0 && fEntry > 0 && fTickSize > 0 && fTickValue > 0 && risk > 0 && fContracts >= 1 && fAutoTicks >= 1;
+
+  // MANUAL MODE: compute contracts from stop
+  const fStop = parseFloat(futStop) || 0;
+  const fManualPriceDist = direction === "Long" ? fEntry - fStop : fStop - fEntry;
+  const fManualTicks = fTickSize > 0 ? Math.max(0, Math.floor(fManualPriceDist / fTickSize)) : 0;
+  const fManualRiskPerContract = fManualTicks * fTickValue;
+  const fManualValid = futMode === "manual" && acct > 0 && fEntry > 0 && fStop > 0 && fTickSize > 0 && fTickValue > 0 && risk > 0 && fManualTicks >= 1;
+  const fManualContracts = fManualValid && fManualRiskPerContract > 0 ? Math.max(1, Math.floor(dollarRisk / fManualRiskPerContract)) : 0;
+  const fManualTotalRisk = fManualContracts * fManualRiskPerContract;
+
+  // Unified futures outputs (pick from correct mode)
+  const futValid = futMode === "auto" ? fAutoValid : fManualValid;
+  const futContracts = futMode === "auto" ? fContracts : fManualContracts;
+  const fRiskTicks = futMode === "auto" ? fAutoTicks : fManualTicks; // whole ticks
+  const fRiskPerContract = futMode === "auto" ? fAutoRiskPerContract : fManualRiskPerContract;
+  const futTotalRisk = futMode === "auto" ? fAutoTotalRisk : fManualTotalRisk;
+  const fRiskPoints = fRiskTicks * fTickSize; // price distance of risk
+  const fActualStop = futMode === "auto" ? fAutoStop : fStop;
+  // R-targets: each R = risk distance in ticks, applied as price movement from entry
+  const fR1 = futValid ? snapPrice(direction === "Long" ? fEntry + fRiskPoints : fEntry - fRiskPoints) : 0;
+  const fR2 = futValid ? snapPrice(direction === "Long" ? fEntry + fRiskPoints*2 : fEntry - fRiskPoints*2) : 0;
+  const fR3 = futValid ? snapPrice(direction === "Long" ? fEntry + fRiskPoints*3 : fEntry - fRiskPoints*3) : 0;
+  // R-target dollar amounts per R
+  const fR1Dollar = fRiskTicks * fTickValue * futContracts;
+  const fR2Dollar = fRiskTicks * fTickValue * futContracts * 2;
+  const fR3Dollar = fRiskTicks * fTickValue * futContracts * 3;
+
+  const inputStyle = { width:"100%", padding:"9px 12px", background:theme.inputBg, border:`1px solid ${theme.borderLight}`, borderRadius:8, color:theme.text, fontSize:13, outline:"none", fontFamily:"'JetBrains Mono', monospace", boxSizing:"border-box" };
+  const labelStyle = { fontSize:10, color:theme.textFaint, textTransform:"uppercase", letterSpacing:0.8, display:"block", marginBottom:5 };
+  const selectStyle = { ...inputStyle, appearance:"none", cursor:"pointer" };
+
+  const ResultCard = ({ label, value, sub, color, large }) => (
+    <div style={{ background:theme.cardBg, borderRadius:8, padding:"12px 14px", textAlign:"center" }}>
+      <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", marginBottom:3 }}>{label}</div>
+      <div style={{ fontSize:large?20:18, fontWeight:800, color, fontFamily:"'JetBrains Mono', monospace" }}>{value}</div>
+      {sub && <div style={{ fontSize:10, color:theme.textFaintest }}>{sub}</div>}
+    </div>
+  );
+
+  const isValid = assetType === "Stock" ? stockValid : assetType === "Options" ? optValid : futValid;
+  const showStopWarning = assetType === "Stock" && acct > 0 && stockEntry > 0 && stockStop > 0 && stockRiskPerShare <= 0;
+  const showFutStopWarning = assetType === "Futures" && futMode === "manual" && acct > 0 && fEntry > 0 && fStop > 0 && fManualTicks <= 0;
+
+  return (
+    <div style={{ background:theme.panelBg, border:`1px solid ${theme.panelBorder}`, borderRadius:14, padding:"18px 20px", marginBottom:16, order:-1 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+        <Calculator size={15} color="#a5b4fc"/>
+        <span style={{ fontSize:13, fontWeight:600, color:theme.text }}>Pre-Trade Risk Calculator</span>
+        <span style={{ fontSize:10, color:theme.textFaintest }}>Size your position before every trade</span>
+      </div>
+
+      {/* Row 1: Account + Asset Type + Direction + Risk % */}
+      <div className="tp-risk-calc-grid" style={{ display:"grid", gridTemplateColumns:"1.3fr 0.8fr 0.7fr 0.7fr", gap:10, marginBottom:12 }}>
+        <div>
+          <label style={labelStyle}>Account</label>
+          <div style={{ display:"flex", gap:6 }}>
+            <select value={selectedAccount} onChange={e=>{setSelectedAccount(e.target.value);}} style={{ ...selectStyle, flex:1 }}>
+              <option value="" style={{ background:theme.selectOptionBg }}>Manual entry...</option>
+              {allAccounts.map(a => <option key={a} value={a} style={{ background:theme.selectOptionBg }}>{a} {accountBalances?.[a] ? `($${parseFloat(accountBalances[a]).toLocaleString()})` : ""}</option>)}
+            </select>
+            <input type="number" value={accountSize} onChange={e=>{setAccountSize(e.target.value);setSelectedAccount("");}} placeholder="$" style={{ ...inputStyle, width:90 }}/>
+          </div>
+        </div>
+        <div>
+          <label style={labelStyle}>Asset Type</label>
+          <select value={assetType} onChange={e=>setAssetType(e.target.value)} style={selectStyle}>
+            <option value="Stock" style={{ background:theme.selectOptionBg }}>📈 Stock</option>
+            <option value="Options" style={{ background:theme.selectOptionBg }}>🎯 Options</option>
+            <option value="Futures" style={{ background:theme.selectOptionBg }}>⚡ Futures</option>
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>Direction</label>
+          <select value={direction} onChange={e=>setDirection(e.target.value)} style={selectStyle}>
+            <option value="Long" style={{ background:theme.selectOptionBg }}>Long</option>
+            <option value="Short" style={{ background:theme.selectOptionBg }}>Short</option>
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>Risk %</label>
+          <div style={{ position:"relative" }}>
+            <input type="number" value={riskPct} onChange={e=>setRiskPct(e.target.value)} placeholder="1" step="0.25" min="0.1" max="10" style={{ ...inputStyle, paddingRight:22 }}/>
+            <span style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", color:theme.textFaintest, fontSize:13 }}>%</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Row 2: Asset-specific inputs */}
+      {assetType === "Stock" && (
+        <div className="tp-risk-calc-grid" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+          <div>
+            <label style={labelStyle}>Entry Price</label>
+            <div style={{ position:"relative" }}>
+              <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:theme.textFaintest, fontSize:13 }}>$</span>
+              <input type="number" value={entryPrice} onChange={e=>setEntryPrice(e.target.value)} placeholder="150.00" style={{ ...inputStyle, paddingLeft:22 }}/>
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>Stop Loss</label>
+            <div style={{ position:"relative" }}>
+              <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:theme.textFaintest, fontSize:13 }}>$</span>
+              <input type="number" value={stopLoss} onChange={e=>setStopLoss(e.target.value)} placeholder="147.50" style={{ ...inputStyle, paddingLeft:22 }}/>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {assetType === "Options" && (
+        <div className="tp-risk-calc-grid" style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:14 }}>
+          <div>
+            <label style={labelStyle}>Entry Premium</label>
+            <div style={{ position:"relative" }}>
+              <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:theme.textFaintest, fontSize:13 }}>$</span>
+              <input type="number" value={optPremium} onChange={e=>setOptPremium(e.target.value)} placeholder="2.50" step="0.05" style={{ ...inputStyle, paddingLeft:22 }}/>
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>Stop Premium <span style={{ fontSize:8, color:theme.textFaintest }}>(optional)</span></label>
+            <div style={{ position:"relative" }}>
+              <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:theme.textFaintest, fontSize:13 }}>$</span>
+              <input type="number" value={optStopPremium} onChange={e=>setOptStopPremium(e.target.value)} placeholder="1.25" step="0.05" style={{ ...inputStyle, paddingLeft:22 }}/>
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>Contracts <span style={{ fontSize:8, color:theme.textFaintest }}>(override)</span></label>
+            <input type="number" value={optContracts} onChange={e=>setOptContracts(e.target.value)} placeholder="Auto" min="1" style={inputStyle}/>
+          </div>
+        </div>
+      )}
+
+      {assetType === "Futures" && (
+        <div style={{ marginBottom:14 }}>
+          {/* Mode toggle */}
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+            <span style={{ fontSize:10, color:theme.textFaint, textTransform:"uppercase", letterSpacing:0.8 }}>Mode:</span>
+            <div style={{ display:"flex", borderRadius:6, overflow:"hidden", border:`1px solid ${theme.borderLight}` }}>
+              <button onClick={()=>setFutMode("manual")} style={{ padding:"4px 12px", border:"none", background:futMode==="manual"?"rgba(99,102,241,0.2)":theme.cardBg, color:futMode==="manual"?"#a5b4fc":theme.textFaint, cursor:"pointer", fontSize:10, fontWeight:600 }}>Enter Stop</button>
+              <button onClick={()=>setFutMode("auto")} style={{ padding:"4px 12px", border:"none", background:futMode==="auto"?"rgba(99,102,241,0.2)":theme.cardBg, color:futMode==="auto"?"#a5b4fc":theme.textFaint, cursor:"pointer", fontSize:10, fontWeight:600, borderLeft:`1px solid ${theme.borderLight}` }}>Calculate Stop</button>
+            </div>
+            <span style={{ fontSize:9, color:theme.textFaintest, fontStyle:"italic" }}>
+              {futMode === "manual" ? "You set the stop → we calculate contracts" : "You set contracts → we calculate max stop distance"}
+            </span>
+          </div>
+
+          {/* Inputs row */}
+          <div className="tp-risk-calc-grid" style={{ display:"grid", gridTemplateColumns: futMode === "manual" ? "1fr 1fr 1fr 1fr" : "1fr 1fr 1fr 1fr", gap:10 }}>
+            <div>
+              <label style={labelStyle}>Contract</label>
+              <select value={futContract} onChange={e=>setFutContract(e.target.value)} style={selectStyle}>
+                <option value="" style={{ background:theme.selectOptionBg }}>Select preset...</option>
+                {(futuresSettings || []).map(f => <option key={f.name} value={f.name} style={{ background:theme.selectOptionBg }}>{f.name} (${f.tickValue}/{f.tickSize})</option>)}
+                <option value="_custom" style={{ background:theme.selectOptionBg }}>Custom...</option>
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>Entry Price</label>
+              <input type="number" value={futEntry} onChange={e=>setFutEntry(e.target.value)} placeholder="5450.25" step="any" style={inputStyle}/>
+            </div>
+            {futMode === "manual" ? (
+              <div>
+                <label style={labelStyle}>Stop Loss</label>
+                <input type="number" value={futStop} onChange={e=>setFutStop(e.target.value)} placeholder="5445.00" step="any" style={inputStyle}/>
+              </div>
+            ) : (
+              <div>
+                <label style={labelStyle}>Contracts</label>
+                <input type="number" value={futNumContracts} onChange={e=>setFutNumContracts(e.target.value)} placeholder="1" min="1" style={inputStyle}/>
+              </div>
+            )}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+              <div>
+                <label style={labelStyle}>Tick Size</label>
+                <input type="number" value={futTickSize} onChange={e=>setFutTickSize(e.target.value)} placeholder="0.25" step="any" style={inputStyle}/>
+              </div>
+              <div>
+                <label style={labelStyle}>Tick $</label>
+                <input type="number" value={futTickValue} onChange={e=>setFutTickValue(e.target.value)} placeholder="12.50" step="any" style={inputStyle}/>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Results */}
+      {isValid ? (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(120px, 1fr))", gap:8 }}>
+          {/* ── Stock Results ── */}
+          {assetType === "Stock" && <>
+            <ResultCard label="Position Size" value={stockShares.toLocaleString()} sub="shares" color="#a5b4fc" large/>
+            <ResultCard label="Dollar Risk" value={`$${dollarRisk.toFixed(2)}`} sub={`${riskPct}% of account`} color="#f87171"/>
+            <ResultCard label="Risk / Share" value={`$${stockRiskPerShare.toFixed(2)}`} sub={direction==="Long"?"entry − stop":"stop − entry"} color="#eab308"/>
+            <ResultCard label="Position Value" value={`$${stockPosValue.toLocaleString()}`} sub={`${stockPctOfAcct.toFixed(1)}% of account`} color="#60a5fa"/>
+            <div style={{ background:theme.cardBg, borderRadius:8, padding:"12px 14px", textAlign:"center" }}>
+              <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", marginBottom:3 }}>R-Targets</div>
+              <div style={{ fontSize:11, fontFamily:"'JetBrains Mono', monospace", lineHeight:1.7 }}>
+                <div style={{ color:"#4ade80" }}>1R: ${stockR1.toFixed(2)} <span style={{ color:theme.textFaintest, fontSize:9 }}>+${dollarRisk.toFixed(0)}</span></div>
+                <div style={{ color:"#22d3ee" }}>2R: ${stockR2.toFixed(2)} <span style={{ color:theme.textFaintest, fontSize:9 }}>+${(dollarRisk*2).toFixed(0)}</span></div>
+                <div style={{ color:"#a78bfa" }}>3R: ${stockR3.toFixed(2)} <span style={{ color:theme.textFaintest, fontSize:9 }}>+${(dollarRisk*3).toFixed(0)}</span></div>
+              </div>
+            </div>
+            {stockPctOfAcct > 20 && <div style={{ gridColumn:"1 / -1", display:"flex", alignItems:"center", gap:6, padding:"8px 12px", background:"rgba(234,179,8,0.08)", border:"1px solid rgba(234,179,8,0.2)", borderRadius:8, fontSize:11, color:"#eab308" }}><AlertTriangle size={14}/> Position is {stockPctOfAcct.toFixed(0)}% of your account — consider reducing size.</div>}
+          </>}
+
+          {/* ── Options Results ── */}
+          {assetType === "Options" && <>
+            <ResultCard label="Contracts" value={optActualContracts.toLocaleString()} sub={oContracts > 0 ? "manual override" : "calculated"} color="#a5b4fc" large/>
+            <ResultCard label="Total Cost" value={`$${optTotalCost.toLocaleString()}`} sub={`${optPctOfAcct.toFixed(1)}% of account`} color="#60a5fa"/>
+            <ResultCard label="Dollar Risk" value={`$${optTotalRisk.toFixed(2)}`} sub={oStopPrem > 0 ? `${optActualContracts} × $${oRiskPerContract.toFixed(0)}/ct` : "max risk (full premium)"} color="#f87171"/>
+            <ResultCard label="Cost / Contract" value={`$${(oPrem * 100).toFixed(0)}`} sub={`$${oPrem.toFixed(2)} × 100`} color="#eab308"/>
+            <div style={{ background:theme.cardBg, borderRadius:8, padding:"12px 14px", textAlign:"center" }}>
+              <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", marginBottom:3 }}>Premium Targets</div>
+              <div style={{ fontSize:11, fontFamily:"'JetBrains Mono', monospace", lineHeight:1.7 }}>
+                <div style={{ color:"#4ade80" }}>1R: ${oR1.toFixed(2)} <span style={{ color:theme.textFaintest, fontSize:9 }}>+${(optActualContracts*(oR1-oPrem)*100).toFixed(0)}</span></div>
+                <div style={{ color:"#22d3ee" }}>2R: ${oR2.toFixed(2)} <span style={{ color:theme.textFaintest, fontSize:9 }}>+${(optActualContracts*(oR2-oPrem)*100).toFixed(0)}</span></div>
+                <div style={{ color:"#a78bfa" }}>3R: ${oR3.toFixed(2)} <span style={{ color:theme.textFaintest, fontSize:9 }}>+${(optActualContracts*(oR3-oPrem)*100).toFixed(0)}</span></div>
+              </div>
+            </div>
+            {!oStopPrem && <div style={{ gridColumn:"1 / -1", display:"flex", alignItems:"center", gap:6, padding:"8px 12px", background:"rgba(96,165,250,0.08)", border:"1px solid rgba(96,165,250,0.2)", borderRadius:8, fontSize:11, color:"#60a5fa" }}>💡 Set a stop premium for tighter risk control. Without it, max risk = full premium paid.</div>}
+            {optPctOfAcct > 10 && <div style={{ gridColumn:"1 / -1", display:"flex", alignItems:"center", gap:6, padding:"8px 12px", background:"rgba(234,179,8,0.08)", border:"1px solid rgba(234,179,8,0.2)", borderRadius:8, fontSize:11, color:"#eab308" }}><AlertTriangle size={14}/> Options position is {optPctOfAcct.toFixed(0)}% of account — consider smaller size.</div>}
+          </>}
+
+          {/* ── Futures Results ── */}
+          {assetType === "Futures" && <>
+            {futMode === "auto" ? (
+              <>
+                <div style={{ background:theme.cardBg, borderRadius:8, padding:"12px 14px", textAlign:"center", border:"1px solid rgba(248,113,113,0.25)" }}>
+                  <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", marginBottom:3 }}>Calculated Stop</div>
+                  <div style={{ fontSize:22, fontWeight:800, color:"#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fAutoStop.toFixed(fTickSize < 0.01 ? 4 : fTickSize < 1 ? 2 : 0)}</div>
+                  <div style={{ fontSize:10, color:theme.textFaintest }}>{direction === "Long" ? "below" : "above"} entry</div>
+                </div>
+                <ResultCard label="Contracts" value={fContracts.toLocaleString()} sub={futContract || "futures"} color="#a5b4fc" large/>
+                <ResultCard label="Ticks to Stop" value={`${fAutoTicks}`} sub={`${fRiskPoints.toFixed(2)} pts · $${fAutoRiskPerContract.toFixed(2)}/ct`} color="#60a5fa"/>
+                <ResultCard label="Total Risk" value={`$${fAutoTotalRisk.toFixed(2)}`} sub={`${fAutoTicks} ticks × $${fTickValue} × ${fContracts}ct`} color="#eab308"/>
+              </>
+            ) : (
+              <>
+                <ResultCard label="Contracts" value={futContracts.toLocaleString()} sub={futContract || "futures"} color="#a5b4fc" large/>
+                <ResultCard label="Ticks to Stop" value={`${fRiskTicks}`} sub={`${fRiskPoints.toFixed(2)} pts`} color="#60a5fa"/>
+                <ResultCard label="Risk / Contract" value={`$${fRiskPerContract.toFixed(2)}`} sub={`${fRiskTicks} ticks × $${fTickValue}/tick`} color="#eab308"/>
+                <ResultCard label="Total Risk" value={`$${futTotalRisk.toFixed(2)}`} sub={`${fRiskTicks}t × $${fTickValue} × ${futContracts}ct`} color="#f87171"/>
+              </>
+            )}
+            <div style={{ background:theme.cardBg, borderRadius:8, padding:"12px 14px", textAlign:"center" }}>
+              <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", marginBottom:3 }}>R-Targets (tick-based)</div>
+              <div style={{ fontSize:11, fontFamily:"'JetBrains Mono', monospace", lineHeight:1.8 }}>
+                <div style={{ color:"#4ade80" }}>1R: {fR1.toFixed(2)} <span style={{ color:theme.textFaintest, fontSize:9 }}>({fRiskTicks}t · +${fR1Dollar.toFixed(0)})</span></div>
+                <div style={{ color:"#22d3ee" }}>2R: {fR2.toFixed(2)} <span style={{ color:theme.textFaintest, fontSize:9 }}>({fRiskTicks*2}t · +${fR2Dollar.toFixed(0)})</span></div>
+                <div style={{ color:"#a78bfa" }}>3R: {fR3.toFixed(2)} <span style={{ color:theme.textFaintest, fontSize:9 }}>({fRiskTicks*3}t · +${fR3Dollar.toFixed(0)})</span></div>
+              </div>
+            </div>
+          </>}
+        </div>
+      ) : (
+        <div style={{ textAlign:"center", padding:"14px", color:theme.textFaintest, fontSize:12 }}>
+          {(showStopWarning || showFutStopWarning) ?
+            <span style={{ color:"#f87171" }}>⚠️ Stop loss must be {direction === "Long" ? "below" : "above"} entry price for a {direction.toLowerCase()} trade</span> :
+            assetType === "Futures" ? (
+              <div>
+                {!(fTickSize > 0 && fTickValue > 0) && <div style={{ marginBottom:4 }}>⚠️ Select a contract preset or enter tick size & tick value</div>}
+                {!(acct > 0) && <div style={{ marginBottom:4 }}>⚠️ Enter an account size or select an account</div>}
+                {!(fEntry > 0) && <div style={{ marginBottom:4 }}>⚠️ Enter an entry price</div>}
+                {futMode === "manual" && !(fStop > 0) && fEntry > 0 && <div style={{ marginBottom:4 }}>⚠️ Enter a stop loss price</div>}
+                {futMode === "auto" && fEntry > 0 && fTickSize > 0 && fTickValue > 0 && acct > 0 && fAutoTicks < 1 && <div style={{ color:"#f87171", marginBottom:4 }}>⚠️ Risk budget too small for {fContracts} contract{fContracts>1?"s":""}. Try fewer contracts or higher risk %</div>}
+                {acct > 0 && fEntry > 0 && fTickSize > 0 && fTickValue > 0 && (futMode === "manual" ? fStop > 0 : true) && fAutoTicks >= 1 ? null :
+                  (fTickSize > 0 && fTickValue > 0 && acct > 0 && fEntry > 0) ? null :
+                  <div style={{ color:theme.textFaintest }}>Fill in the fields above to calculate</div>
+                }
+              </div>
+            ) :
+            "Fill in the fields above to calculate your position size"
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings }) {
   const widgetConfig = useMemo(() => {
     if (!dashWidgets || dashWidgets.length === 0) return DEFAULT_DASH_WIDGETS;
     const merged = [];
@@ -1030,6 +1429,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
   const [dateRangePreset, setDateRangePreset] = useState("all");
   const [customDateFrom, setCustomDateFrom] = useState("");
   const [customDateTo, setCustomDateTo] = useState("");
+  const [showRiskCalc, setShowRiskCalc] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
   const [pnlMode, setPnlMode] = useState("dollar"); // dollar | percent
@@ -1253,6 +1653,14 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
           {banner && <div style={{ flex:1, height:52, borderRadius:8, overflow:"hidden", background:theme.inputBg }}><img src={banner} alt="Banner" style={{ width:"100%", height:"100%", objectFit:"cover" }}/></div>}
         </div>
       )}
+
+      {/* ═══════ RISK CALCULATOR TOGGLE ═══════ */}
+      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom: showRiskCalc ? 0 : 12, order:-1 }}>
+        <button onClick={()=>setShowRiskCalc(!showRiskCalc)} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 14px", borderRadius:8, border:`1px solid ${showRiskCalc ? "rgba(99,102,241,0.4)" : theme.borderLight}`, background: showRiskCalc ? "rgba(99,102,241,0.12)" : theme.inputBg, color: showRiskCalc ? "#a5b4fc" : theme.textMuted, cursor:"pointer", fontSize:12, fontWeight:600 }}>
+          <Calculator size={14}/> Risk Calculator {showRiskCalc ? "▾" : "▸"}
+        </button>
+      </div>
+      {showRiskCalc && <RiskCalculator theme={theme} accountBalances={accountBalances} futuresSettings={futuresSettings} customFields={customFields}/>}
 
       {/* ═══════ ACCOUNT BALANCE CARDS ═══════ */}
       {wVis("accounts") && accountSummaries.length > 0 && (
@@ -2881,13 +3289,16 @@ function JournalTab({ journal, onSave, trades, theme }) {
 }
 
 // ─── HOLDINGS TAB ────────────────────────────────────────────────────────────
-function HoldingsTab({ trades, accountBalances, onEditTrade, theme }) {
+function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, onSaveDividends, onSaveTrades }) {
   const [accountFilter, setAccountFilter] = useState("All");
   const [expandedTicker, setExpandedTicker] = useState(null);
   const [viewingSrc, setViewingSrc] = useState(null);
   const [currentPrices, setCurrentPrices] = useState({});
-  const [lookupLoading, setLookupLoading] = useState(null); // ticker or "all"
+  const [lookupLoading, setLookupLoading] = useState(null);
   const [lookupError, setLookupError] = useState("");
+  const [holdingsSection, setHoldingsSection] = useState("positions"); // positions | dividends
+  const [showDivModal, setShowDivModal] = useState(false);
+  const [editingDiv, setEditingDiv] = useState(null);
 
   const accounts = useMemo(() => {
     const accts = new Set();
@@ -3099,6 +3510,16 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme }) {
           <div style={{ fontSize:10, color:"var(--tp-faintest)" }}>total cost basis</div>
         </div>
       </div>
+
+      {/* Section tabs */}
+      <div style={{ display:"flex", gap:8, marginBottom:20, borderBottom:"1px solid var(--tp-border)", paddingBottom:2 }}>
+        {[{id:"positions",label:"Positions",icon:Briefcase},{id:"dividends",label:"Dividends",icon:DollarSign}].map(s => (
+          <button key={s.id} onClick={()=>setHoldingsSection(s.id)} style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 16px", border:"none", background:holdingsSection===s.id?"rgba(99,102,241,0.15)":"transparent", color:holdingsSection===s.id?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:holdingsSection===s.id?"2px solid #6366f1":"none" }}><s.icon size={14}/> {s.label}</button>
+        ))}
+      </div>
+
+      {/* ═══════ POSITIONS ═══════ */}
+      {holdingsSection === "positions" && <>
 
       {/* Unrealized P&L banner when prices are entered */}
       {totalUnrealized !== null && (
@@ -3355,8 +3776,377 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme }) {
           })}
         </div>
       )}
+      </>}
+
+      {/* ═══════ DIVIDENDS ═══════ */}
+      {holdingsSection === "dividends" && <DividendTracker
+        dividends={dividends || []}
+        onSave={onSaveDividends}
+        trades={trades}
+        onSaveTrades={onSaveTrades}
+        holdings={holdings}
+        accountBalances={accountBalances}
+        showModal={showDivModal}
+        setShowModal={setShowDivModal}
+        editingDiv={editingDiv}
+        setEditingDiv={setEditingDiv}
+      />}
 
       {viewingSrc && <ScreenshotLightbox src={viewingSrc} onClose={()=>setViewingSrc(null)}/>}
+    </div>
+  );
+}
+
+// ─── DIVIDEND TRACKER ────────────────────────────────────────────────────────
+function DividendTracker({ dividends, onSave, trades, onSaveTrades, holdings, accountBalances, showModal, setShowModal, editingDiv, setEditingDiv }) {
+  const [sortBy, setSortBy] = useState("date"); // date | ticker | amount
+
+  // All tickers from current holdings (stocks only)
+  const holdingTickers = useMemo(() => {
+    const map = {};
+    Object.entries(holdings || {}).forEach(([acct, tickers]) => {
+      tickers.forEach(h => {
+        if (h.totalShares > 0) {
+          if (!map[h.ticker]) map[h.ticker] = { shares: 0, accounts: [] };
+          map[h.ticker].shares += h.totalShares;
+          map[h.ticker].accounts.push(acct);
+        }
+      });
+    });
+    return map;
+  }, [holdings]);
+
+  // Dividend summary stats
+  const stats = useMemo(() => {
+    const all = dividends || [];
+    const totalCash = all.filter(d => d.type === "cash").reduce((s, d) => s + (parseFloat(d.totalAmount) || 0), 0);
+    const totalDrip = all.filter(d => d.type === "drip").reduce((s, d) => s + (parseFloat(d.totalAmount) || 0), 0);
+    const totalDripShares = all.filter(d => d.type === "drip").reduce((s, d) => s + (parseFloat(d.dripShares) || 0), 0);
+    const byTicker = {};
+    all.forEach(d => {
+      if (!byTicker[d.ticker]) byTicker[d.ticker] = { total: 0, count: 0, drip: 0, cash: 0 };
+      byTicker[d.ticker].total += parseFloat(d.totalAmount) || 0;
+      byTicker[d.ticker].count++;
+      if (d.type === "drip") byTicker[d.ticker].drip += parseFloat(d.totalAmount) || 0;
+      else byTicker[d.ticker].cash += parseFloat(d.totalAmount) || 0;
+    });
+    // YTD
+    const now = new Date();
+    const ytdStart = `${now.getFullYear()}-01-01`;
+    const ytd = all.filter(d => d.date >= ytdStart).reduce((s, d) => s + (parseFloat(d.totalAmount) || 0), 0);
+    return { totalCash, totalDrip, totalDripShares, total: totalCash + totalDrip, ytd, count: all.length, byTicker };
+  }, [dividends]);
+
+  const sorted = useMemo(() => {
+    const list = [...(dividends || [])];
+    if (sortBy === "date") list.sort((a, b) => b.date?.localeCompare(a.date));
+    else if (sortBy === "ticker") list.sort((a, b) => a.ticker?.localeCompare(b.ticker));
+    else if (sortBy === "amount") list.sort((a, b) => (parseFloat(b.totalAmount)||0) - (parseFloat(a.totalAmount)||0));
+    return list;
+  }, [dividends, sortBy]);
+
+  const handleSaveDiv = (div) => {
+    onSave(prev => {
+      const existing = prev.findIndex(d => d.id === div.id);
+      if (existing >= 0) { const u = [...prev]; u[existing] = div; return u; }
+      return [div, ...prev];
+    });
+
+    // If DRIP, add shares to the holding by creating/updating a trade
+    if (div.type === "drip" && div.dripShares > 0 && div.dripPrice > 0) {
+      // Create a synthetic "DRIP" trade that adds shares
+      const dripTrade = {
+        id: `drip-${div.id}`,
+        date: div.date,
+        ticker: div.ticker,
+        direction: "Long",
+        assetType: "Stock",
+        entryPrice: String(div.dripPrice),
+        quantity: String(div.dripShares),
+        account: div.account || "",
+        status: "Open",
+        pnl: null,
+        notes: `DRIP reinvestment: ${div.dripShares} shares @ $${parseFloat(div.dripPrice).toFixed(2)} from $${parseFloat(div.totalAmount).toFixed(2)} dividend`,
+        exitPrice: "", stopLoss: "", takeProfit: "", grade: "", playbook: "",
+        emotions: [], screenshots: [], tags: ["DRIP"],
+        optionsStrategyType: "Single Leg", legs: [],
+        futuresContract: "", tickSize: "", tickValue: "",
+        entryTime: "", exitTime: ""
+      };
+      onSaveTrades(prev => {
+        const idx = prev.findIndex(t => t.id === dripTrade.id);
+        if (idx >= 0) { const u = [...prev]; u[idx] = dripTrade; return u; }
+        return [dripTrade, ...prev];
+      });
+    }
+    setShowModal(false);
+    setEditingDiv(null);
+  };
+
+  const handleDeleteDiv = (id) => {
+    onSave(prev => prev.filter(d => d.id !== id));
+    // Also remove synthetic DRIP trade
+    onSaveTrades(prev => prev.filter(t => t.id !== `drip-${id}`));
+  };
+
+  return (
+    <div>
+      {/* Summary banner */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(130px, 1fr))", gap:10, marginBottom:20 }}>
+        <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 16px", textAlign:"center" }}>
+          <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase", marginBottom:4 }}>Total Dividends</div>
+          <div style={{ fontSize:20, fontWeight:800, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>${stats.total.toFixed(2)}</div>
+          <div style={{ fontSize:10, color:"var(--tp-faintest)" }}>{stats.count} payments</div>
+        </div>
+        <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 16px", textAlign:"center" }}>
+          <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase", marginBottom:4 }}>YTD Income</div>
+          <div style={{ fontSize:20, fontWeight:800, color:"#60a5fa", fontFamily:"'JetBrains Mono', monospace" }}>${stats.ytd.toFixed(2)}</div>
+        </div>
+        <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 16px", textAlign:"center" }}>
+          <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase", marginBottom:4 }}>Cash Payouts</div>
+          <div style={{ fontSize:20, fontWeight:800, color:"var(--tp-text2)", fontFamily:"'JetBrains Mono', monospace" }}>${stats.totalCash.toFixed(2)}</div>
+        </div>
+        <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 16px", textAlign:"center" }}>
+          <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase", marginBottom:4 }}>DRIP Reinvested</div>
+          <div style={{ fontSize:20, fontWeight:800, color:"#a5b4fc", fontFamily:"'JetBrains Mono', monospace" }}>${stats.totalDrip.toFixed(2)}</div>
+          {stats.totalDripShares > 0 && <div style={{ fontSize:10, color:"var(--tp-faintest)" }}>{stats.totalDripShares.toFixed(4)} shares added</div>}
+        </div>
+      </div>
+
+      {/* Per-ticker breakdown (if dividends exist) */}
+      {Object.keys(stats.byTicker).length > 0 && (
+        <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:12, padding:"16px 18px", marginBottom:20 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:"var(--tp-text)", marginBottom:10, textTransform:"uppercase", letterSpacing:0.8 }}>Income by Ticker</div>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+            {Object.entries(stats.byTicker).sort((a,b) => b[1].total - a[1].total).map(([ticker, d]) => (
+              <div key={ticker} style={{ background:"var(--tp-card)", borderRadius:8, padding:"8px 14px", minWidth:90, textAlign:"center" }}>
+                <div style={{ fontSize:13, fontWeight:700, color:"var(--tp-text)", marginBottom:2 }}>{ticker}</div>
+                <div style={{ fontSize:14, fontWeight:800, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>${d.total.toFixed(2)}</div>
+                <div style={{ fontSize:9, color:"var(--tp-faintest)" }}>{d.count} payment{d.count !== 1 ? "s" : ""}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Add + sort controls */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+        <div style={{ display:"flex", gap:6 }}>
+          {["date","ticker","amount"].map(s => (
+            <button key={s} onClick={()=>setSortBy(s)} style={{ padding:"5px 12px", borderRadius:6, border:`1px solid ${sortBy===s?"#6366f1":"var(--tp-border-l)"}`, background:sortBy===s?"rgba(99,102,241,0.12)":"transparent", color:sortBy===s?"#a5b4fc":"var(--tp-muted)", cursor:"pointer", fontSize:11, fontWeight:600, textTransform:"capitalize" }}>{s}</button>
+          ))}
+        </div>
+        <button onClick={()=>{setEditingDiv(null);setShowModal(true);}} style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 18px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", cursor:"pointer", fontSize:12, fontWeight:600, boxShadow:"0 4px 14px rgba(99,102,241,0.3)" }}>
+          <Plus size={14}/> Log Dividend
+        </button>
+      </div>
+
+      {/* Dividend log */}
+      {sorted.length === 0 ? (
+        <div style={{ textAlign:"center", padding:"60px 20px", color:"var(--tp-faint)" }}>
+          <DollarSign size={48} style={{ margin:"0 auto 16px", opacity:0.35 }}/>
+          <p style={{ fontSize:15, margin:0 }}>No dividends logged yet.</p>
+          <p style={{ fontSize:12, color:"var(--tp-faintest)", margin:"6px 0 0" }}>Click "Log Dividend" to record a payment. Choose Cash to add to your account balance, or DRIP to add shares to your position.</p>
+        </div>
+      ) : (
+        <div style={{ display:"grid", gap:8 }}>
+          {sorted.map(d => (
+            <div key={d.id} style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 18px", display:"grid", gridTemplateColumns:"90px 70px 1fr auto auto", gap:12, alignItems:"center" }}>
+              <div style={{ fontSize:12, color:"var(--tp-muted)", fontFamily:"'JetBrains Mono', monospace" }}>{d.date}</div>
+              <div style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)" }}>{d.ticker}</div>
+              <div>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <span style={{ fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:4, background: d.type === "drip" ? "rgba(165,180,252,0.12)" : "rgba(74,222,128,0.12)", color: d.type === "drip" ? "#a5b4fc" : "#4ade80", textTransform:"uppercase" }}>{d.type}</span>
+                  <span style={{ fontSize:11, color:"var(--tp-faint)" }}>{d.shares} shares × ${parseFloat(d.perShare).toFixed(4)}/sh</span>
+                </div>
+                {d.type === "drip" && d.dripShares && (
+                  <div style={{ fontSize:10, color:"#a5b4fc", marginTop:3 }}>+{parseFloat(d.dripShares).toFixed(4)} shares @ ${parseFloat(d.dripPrice).toFixed(2)}</div>
+                )}
+                {d.account && <div style={{ fontSize:9, color:"var(--tp-faintest)", marginTop:2 }}>{d.account}</div>}
+              </div>
+              <div style={{ fontSize:16, fontWeight:800, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace", textAlign:"right" }}>${parseFloat(d.totalAmount).toFixed(2)}</div>
+              <div style={{ display:"flex", gap:4 }}>
+                <button onClick={()=>{setEditingDiv(d);setShowModal(true);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid var(--tp-border-l)", background:"transparent", color:"var(--tp-faint)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit"><FileText size={12}/></button>
+                <button onClick={()=>handleDeleteDiv(d.id)} style={{ width:28, height:28, borderRadius:6, border:"1px solid rgba(248,113,113,0.2)", background:"transparent", color:"#f87171", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Delete"><Trash2 size={12}/></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Dividend Modal */}
+      {showModal && <DividendModal
+        onSave={handleSaveDiv}
+        onClose={()=>{setShowModal(false);setEditingDiv(null);}}
+        editDiv={editingDiv}
+        holdingTickers={holdingTickers}
+        accountBalances={accountBalances}
+      />}
+    </div>
+  );
+}
+
+// ─── DIVIDEND MODAL ─────────────────────────────────────────────────────────
+function DividendModal({ onSave, onClose, editDiv, holdingTickers, accountBalances }) {
+  const [div, setDiv] = useState(editDiv || {
+    id: Date.now(), date: new Date().toISOString().split("T")[0],
+    ticker: "", perShare: "", shares: "", totalAmount: "",
+    type: "cash", dripPrice: "", dripShares: "",
+    account: "", notes: ""
+  });
+
+  const set = (k) => (v) => setDiv(prev => {
+    const next = { ...prev, [k]: typeof v === "object" && v.target ? v.target.value : v };
+    // Auto-calculate total when perShare or shares change
+    if (k === "perShare" || k === "shares") {
+      const ps = parseFloat(k === "perShare" ? (typeof v === "object" ? v.target.value : v) : next.perShare) || 0;
+      const sh = parseFloat(k === "shares" ? (typeof v === "object" ? v.target.value : v) : next.shares) || 0;
+      next.totalAmount = ps > 0 && sh > 0 ? (ps * sh).toFixed(2) : next.totalAmount;
+    }
+    // Auto-calculate DRIP shares when dripPrice changes
+    if ((k === "dripPrice" || k === "totalAmount") && next.type === "drip") {
+      const total = parseFloat(k === "totalAmount" ? (typeof v === "object" ? v.target.value : v) : next.totalAmount) || 0;
+      const dp = parseFloat(k === "dripPrice" ? (typeof v === "object" ? v.target.value : v) : next.dripPrice) || 0;
+      if (total > 0 && dp > 0) next.dripShares = (total / dp).toFixed(4);
+    }
+    return next;
+  });
+
+  // Auto-fill shares when ticker selected from holdings
+  const handleTickerChange = (ticker) => {
+    const h = holdingTickers[ticker];
+    setDiv(prev => ({
+      ...prev,
+      ticker,
+      shares: h ? String(h.shares) : prev.shares,
+      account: h?.accounts?.[0] || prev.account
+    }));
+  };
+
+  const allAccounts = Object.keys(accountBalances || {});
+  const tickerList = Object.keys(holdingTickers);
+  const total = parseFloat(div.totalAmount) || 0;
+  const dripShares = parseFloat(div.dripShares) || 0;
+
+  const canSave = div.ticker && div.date && total > 0;
+
+  const inputStyle = { width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", fontFamily:"'JetBrains Mono', monospace", boxSizing:"border-box" };
+  const labelStyle = { fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.8, display:"block", marginBottom:5 };
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, backdropFilter:"blur(3px)" }}>
+      <div style={{ background:"var(--tp-sel-bg)", borderRadius:16, width:"min(96vw, 520px)", maxHeight:"90vh", overflow:"auto", padding:28, border:"1px solid var(--tp-border-l)", boxShadow:"0 24px 60px rgba(0,0,0,0.4)" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:22 }}>
+          <h3 style={{ color:"var(--tp-text)", fontSize:17, fontWeight:600, margin:0 }}>{editDiv ? "Edit Dividend" : "Log Dividend Payment"}</h3>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:"var(--tp-faint)", cursor:"pointer" }}><X size={20}/></button>
+        </div>
+
+        {/* Row 1: Ticker + Date + Account */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:12 }}>
+          <div>
+            <label style={labelStyle}>Ticker</label>
+            {tickerList.length > 0 ? (
+              <select value={div.ticker} onChange={e=>handleTickerChange(e.target.value)} style={{ ...inputStyle, appearance:"none", cursor:"pointer" }}>
+                <option value="" style={{ background:"var(--tp-sel-bg)" }}>Select...</option>
+                {tickerList.map(t => <option key={t} value={t} style={{ background:"var(--tp-sel-bg)" }}>{t} ({holdingTickers[t].shares} shares)</option>)}
+                <option value="_custom" style={{ background:"var(--tp-sel-bg)" }}>Other ticker...</option>
+              </select>
+            ) : (
+              <input type="text" value={div.ticker} onChange={e=>setDiv(p=>({...p, ticker:e.target.value.toUpperCase()}))} placeholder="AAPL" style={inputStyle} maxLength={10}/>
+            )}
+            {div.ticker === "_custom" && <input type="text" value="" onChange={e=>setDiv(p=>({...p, ticker:e.target.value.toUpperCase()}))} placeholder="Enter ticker" style={{ ...inputStyle, marginTop:6 }} maxLength={10} autoFocus/>}
+          </div>
+          <div>
+            <label style={labelStyle}>Payment Date</label>
+            <input type="date" value={div.date} onChange={set("date")} style={inputStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>Account</label>
+            <select value={div.account} onChange={set("account")} style={{ ...inputStyle, appearance:"none", cursor:"pointer" }}>
+              <option value="" style={{ background:"var(--tp-sel-bg)" }}>—</option>
+              {allAccounts.map(a => <option key={a} value={a} style={{ background:"var(--tp-sel-bg)" }}>{a}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* Row 2: Per Share + Shares + Total */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:12 }}>
+          <div>
+            <label style={labelStyle}>$ Per Share</label>
+            <input type="number" value={div.perShare} onChange={set("perShare")} placeholder="0.96" step="0.0001" style={inputStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>Shares Held</label>
+            <input type="number" value={div.shares} onChange={set("shares")} placeholder="100" style={inputStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>Total Amount</label>
+            <div style={{ position:"relative" }}>
+              <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"var(--tp-faintest)", fontSize:13 }}>$</span>
+              <input type="number" value={div.totalAmount} onChange={set("totalAmount")} placeholder="96.00" step="0.01" style={{ ...inputStyle, paddingLeft:22, fontWeight:700, color:"#4ade80" }}/>
+            </div>
+          </div>
+        </div>
+
+        {/* Row 3: Type toggle */}
+        <div style={{ marginBottom:12 }}>
+          <label style={labelStyle}>Payout Type</label>
+          <div style={{ display:"flex", gap:0, borderRadius:8, overflow:"hidden", border:"1px solid var(--tp-border-l)" }}>
+            <button onClick={()=>setDiv(p=>({...p, type:"cash"}))} style={{ flex:1, padding:"10px 0", border:"none", background:div.type==="cash"?"rgba(74,222,128,0.15)":"var(--tp-card)", color:div.type==="cash"?"#4ade80":"var(--tp-faint)", cursor:"pointer", fontSize:12, fontWeight:700 }}>
+              💵 Cash Payout
+            </button>
+            <button onClick={()=>setDiv(p=>({...p, type:"drip"}))} style={{ flex:1, padding:"10px 0", border:"none", borderLeft:"1px solid var(--tp-border-l)", background:div.type==="drip"?"rgba(165,180,252,0.15)":"var(--tp-card)", color:div.type==="drip"?"#a5b4fc":"var(--tp-faint)", cursor:"pointer", fontSize:12, fontWeight:700 }}>
+              🔄 DRIP Reinvest
+            </button>
+          </div>
+        </div>
+
+        {/* DRIP fields */}
+        {div.type === "drip" && (
+          <div style={{ background:"rgba(165,180,252,0.05)", border:"1px solid rgba(165,180,252,0.12)", borderRadius:10, padding:"14px 16px", marginBottom:12 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"#a5b4fc", marginBottom:10 }}>DRIP Reinvestment Details</div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <div>
+                <label style={labelStyle}>Reinvestment Price</label>
+                <div style={{ position:"relative" }}>
+                  <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"var(--tp-faintest)", fontSize:13 }}>$</span>
+                  <input type="number" value={div.dripPrice} onChange={set("dripPrice")} placeholder="150.25" step="0.01" style={{ ...inputStyle, paddingLeft:22 }}/>
+                </div>
+              </div>
+              <div>
+                <label style={labelStyle}>Shares Added</label>
+                <input type="number" value={div.dripShares} onChange={set("dripShares")} placeholder="0.6389" step="0.0001" style={{ ...inputStyle, fontWeight:700, color:"#a5b4fc" }} readOnly={parseFloat(div.dripPrice) > 0 && total > 0}/>
+              </div>
+            </div>
+            {total > 0 && dripShares > 0 && (
+              <div style={{ marginTop:10, fontSize:11, color:"var(--tp-faint)", lineHeight:1.6 }}>
+                ${total.toFixed(2)} ÷ ${parseFloat(div.dripPrice).toFixed(2)} = <strong style={{ color:"#a5b4fc" }}>{dripShares.toFixed(4)} shares</strong> added to your {div.ticker} position
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Cash payout info */}
+        {div.type === "cash" && total > 0 && (
+          <div style={{ background:"rgba(74,222,128,0.05)", border:"1px solid rgba(74,222,128,0.12)", borderRadius:10, padding:"12px 16px", marginBottom:12, fontSize:11, color:"#4ade80" }}>
+            💵 ${total.toFixed(2)} will be recorded as cash income{div.account ? ` in ${div.account}` : ""}
+          </div>
+        )}
+
+        {/* Notes */}
+        <div style={{ marginBottom:16 }}>
+          <label style={labelStyle}>Notes (optional)</label>
+          <input type="text" value={div.notes || ""} onChange={set("notes")} placeholder="Quarterly dividend, special dividend, etc." style={inputStyle}/>
+        </div>
+
+        {/* Actions */}
+        <div style={{ display:"flex", justifyContent:"flex-end", gap:10 }}>
+          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid var(--tp-border-l)", background:"transparent", color:"var(--tp-muted)", cursor:"pointer", fontSize:13 }}>Cancel</button>
+          <button onClick={()=>canSave && onSave(div)} disabled={!canSave} style={{ padding:"9px 22px", borderRadius:8, border:"none", background:canSave?"linear-gradient(135deg,#6366f1,#8b5cf6)":"var(--tp-card)", color:canSave?"#fff":"var(--tp-faintest)", cursor:canSave?"pointer":"not-allowed", fontSize:13, fontWeight:600, boxShadow:canSave?"0 4px 14px rgba(99,102,241,0.3)":"none" }}>
+            {editDiv ? "Update" : "Log Dividend"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3821,7 +4611,7 @@ function PlaybookTab({ playbooks, onSave, trades }) {
   const [riskFilter, setRiskFilter] = useState("All");
   const [search, setSearch] = useState("");
   const [viewingSrc, setViewingSrc] = useState(null);
-  const [section, setSection] = useState("library"); // library | my_setups
+  const [section, setSection] = useState("library"); // library | my_setups | analytics
   const [collapsedCats, setCollapsedCats] = useState({});
 
   const toggleCatCollapse = (cat) => setCollapsedCats(p => ({ ...p, [cat]: !p[cat] }));
@@ -3844,7 +4634,7 @@ function PlaybookTab({ playbooks, onSave, trades }) {
   };
 
   // Merge sources based on section
-  const allItems = section === "library" ? STRATEGY_LIBRARY : (playbooks || []);
+  const allItems = section === "library" ? STRATEGY_LIBRARY : section === "my_setups" ? (playbooks || []) : [];
 
   const filtered = allItems.filter(pb => {
     if (categoryFilter !== "All" && pb.category !== categoryFilter) return false;
@@ -3894,6 +4684,7 @@ function PlaybookTab({ playbooks, onSave, trades }) {
         <div style={{ display:"flex", borderRadius:8, overflow:"hidden", border:"1px solid var(--tp-border-l)" }}>
           <button onClick={()=>setSection("library")} style={{ padding:"7px 16px", border:"none", background:section==="library"?"rgba(99,102,241,0.2)":"var(--tp-card)", color:section==="library"?"#a5b4fc":"#5c6070", cursor:"pointer", fontSize:12, fontWeight:600 }}>📚 Library</button>
           <button onClick={()=>setSection("my_setups")} style={{ padding:"7px 16px", border:"none", background:section==="my_setups"?"rgba(99,102,241,0.2)":"var(--tp-card)", color:section==="my_setups"?"#a5b4fc":"#5c6070", cursor:"pointer", fontSize:12, fontWeight:600, borderLeft:"1px solid rgba(255,255,255,0.08)" }}>⚡ My Setups</button>
+          <button onClick={()=>setSection("analytics")} style={{ padding:"7px 16px", border:"none", background:section==="analytics"?"rgba(99,102,241,0.2)":"var(--tp-card)", color:section==="analytics"?"#a5b4fc":"#5c6070", cursor:"pointer", fontSize:12, fontWeight:600, borderLeft:"1px solid rgba(255,255,255,0.08)" }}>📊 Analytics</button>
         </div>
 
         {/* Category filter */}
@@ -4081,8 +4872,257 @@ function PlaybookTab({ playbooks, onSave, trades }) {
         </div>
       )}
 
+      {/* ═══════ SETUP ANALYTICS ═══════ */}
+      {section === "analytics" && <SetupAnalytics trades={trades} playbooks={playbooks}/>}
+
       {showModal && <PlaybookModal playbook={editingPlaybook} onSave={handleSave} onClose={()=>{setShowModal(false);setEditingPlaybook(null);}}/>}
       {viewingSrc && <ScreenshotLightbox src={viewingSrc} onClose={()=>setViewingSrc(null)}/>}
+    </div>
+  );
+}
+
+// ─── SETUP ANALYTICS ────────────────────────────────────────────────────────
+function SetupAnalytics({ trades, playbooks }) {
+  const [expandedSetup, setExpandedSetup] = useState(null);
+  const [sortBy, setSortBy] = useState("count"); // count | winRate | pnl | avg
+
+  // Compute per-setup stats
+  const setupStats = useMemo(() => {
+    const closed = (trades || []).filter(t => t.pnl !== null && t.playbook);
+    const map = {};
+    closed.forEach(t => {
+      const key = t.playbook;
+      if (!map[key]) map[key] = { name: key, trades: [], wins: 0, losses: 0, breakeven: 0, totalPnL: 0, grossWin: 0, grossLoss: 0, bestTrade: null, worstTrade: null, streak: 0, maxWinStreak: 0, maxLoseStreak: 0, currentStreak: 0, byDay: {}, byAsset: {} };
+      const s = map[key];
+      s.trades.push(t);
+      s.totalPnL += t.pnl;
+      if (t.pnl > 0) { s.wins++; s.grossWin += t.pnl; }
+      else if (t.pnl < 0) { s.losses++; s.grossLoss += Math.abs(t.pnl); }
+      else s.breakeven++;
+      if (!s.bestTrade || t.pnl > s.bestTrade.pnl) s.bestTrade = t;
+      if (!s.worstTrade || t.pnl < s.worstTrade.pnl) s.worstTrade = t;
+      // Day of week
+      const day = new Date(t.date).toLocaleDateString("en-US", { weekday: "short" });
+      if (!s.byDay[day]) s.byDay[day] = { count: 0, pnl: 0, wins: 0 };
+      s.byDay[day].count++;
+      s.byDay[day].pnl += t.pnl;
+      if (t.pnl > 0) s.byDay[day].wins++;
+      // Asset type
+      if (!s.byAsset[t.assetType]) s.byAsset[t.assetType] = { count: 0, pnl: 0 };
+      s.byAsset[t.assetType].count++;
+      s.byAsset[t.assetType].pnl += t.pnl;
+    });
+
+    // Compute streaks and derived metrics
+    return Object.values(map).map(s => {
+      const count = s.trades.length;
+      const winRate = count > 0 ? (s.wins / count) * 100 : 0;
+      const avgPnL = count > 0 ? s.totalPnL / count : 0;
+      const avgWin = s.wins > 0 ? s.grossWin / s.wins : 0;
+      const avgLoss = s.losses > 0 ? s.grossLoss / s.losses : 0;
+      const profitFactor = s.grossLoss > 0 ? s.grossWin / s.grossLoss : s.grossWin > 0 ? Infinity : 0;
+      const expectancy = count > 0 ? ((winRate/100) * avgWin) - ((1 - winRate/100) * avgLoss) : 0;
+      // Streaks
+      let curr = 0, maxW = 0, maxL = 0;
+      const sorted = [...s.trades].sort((a,b) => new Date(a.date) - new Date(b.date));
+      sorted.forEach(t => {
+        if (t.pnl > 0) { curr = curr > 0 ? curr + 1 : 1; maxW = Math.max(maxW, curr); }
+        else if (t.pnl < 0) { curr = curr < 0 ? curr - 1 : -1; maxL = Math.max(maxL, Math.abs(curr)); }
+        else curr = 0;
+      });
+      // Cumulative P&L for sparkline
+      let cum = 0;
+      const cumPnL = sorted.map(t => { cum += t.pnl; return { date: t.date, pnl: cum }; });
+      // Find matching playbook entry for metadata
+      const pbEntry = (playbooks || []).find(p => p.name === s.name) || STRATEGY_LIBRARY.find(p => p.name === s.name);
+      return { ...s, count, winRate, avgPnL, avgWin, avgLoss, profitFactor, expectancy, maxWinStreak: maxW, maxLoseStreak: maxL, currentStreak: curr, cumPnL, category: pbEntry?.category || "—", risk: pbEntry?.risk || "—" };
+    });
+  }, [trades, playbooks]);
+
+  const sorted = useMemo(() => {
+    const arr = [...setupStats];
+    if (sortBy === "count") arr.sort((a,b) => b.count - a.count);
+    else if (sortBy === "winRate") arr.sort((a,b) => b.winRate - a.winRate);
+    else if (sortBy === "pnl") arr.sort((a,b) => b.totalPnL - a.totalPnL);
+    else if (sortBy === "avg") arr.sort((a,b) => b.avgPnL - a.avgPnL);
+    else if (sortBy === "expectancy") arr.sort((a,b) => b.expectancy - a.expectancy);
+    return arr;
+  }, [setupStats, sortBy]);
+
+  // Overall summary
+  const overall = useMemo(() => {
+    const tagged = (trades || []).filter(t => t.pnl !== null && t.playbook);
+    const untagged = (trades || []).filter(t => t.pnl !== null && !t.playbook);
+    const taggedPnL = tagged.reduce((s,t) => s + t.pnl, 0);
+    const untaggedPnL = untagged.reduce((s,t) => s + t.pnl, 0);
+    return { taggedCount: tagged.length, untaggedCount: untagged.length, taggedPnL, untaggedPnL, setupCount: setupStats.length };
+  }, [trades, setupStats]);
+
+  const DAYS = ["Mon","Tue","Wed","Thu","Fri"];
+
+  if (setupStats.length === 0) {
+    return (
+      <div style={{ textAlign:"center", padding:"70px 20px", color:"var(--tp-faint)" }}>
+        <BarChart3 size={48} style={{ margin:"0 auto 16px", opacity:0.35 }}/>
+        <p style={{ margin:0, fontSize:15, marginBottom:8 }}>No analytics data yet</p>
+        <p style={{ margin:0, fontSize:12, color:"var(--tp-faintest)" }}>Tag your trades with a playbook setup in the trade modal, then close them to see performance analytics here.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Summary banner */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))", gap:10, marginBottom:20 }}>
+        <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 16px", textAlign:"center" }}>
+          <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase", marginBottom:4 }}>Setups Tracked</div>
+          <div style={{ fontSize:22, fontWeight:800, color:"#a5b4fc", fontFamily:"'JetBrains Mono', monospace" }}>{overall.setupCount}</div>
+        </div>
+        <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 16px", textAlign:"center" }}>
+          <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase", marginBottom:4 }}>Tagged Trades</div>
+          <div style={{ fontSize:22, fontWeight:800, color:"#60a5fa", fontFamily:"'JetBrains Mono', monospace" }}>{overall.taggedCount}</div>
+        </div>
+        <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 16px", textAlign:"center" }}>
+          <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase", marginBottom:4 }}>Tagged P&L</div>
+          <div style={{ fontSize:22, fontWeight:800, color:overall.taggedPnL >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fmt(overall.taggedPnL)}</div>
+        </div>
+        <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 16px", textAlign:"center" }}>
+          <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase", marginBottom:4 }}>Untagged Trades</div>
+          <div style={{ fontSize:22, fontWeight:800, color: overall.untaggedCount > 0 ? "#eab308" : "#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>{overall.untaggedCount}</div>
+          {overall.untaggedCount > 0 && <div style={{ fontSize:9, color:"#eab308", marginTop:2 }}>Tag these for better insights!</div>}
+        </div>
+      </div>
+
+      {/* Sort controls */}
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:16, flexWrap:"wrap" }}>
+        <span style={{ fontSize:11, color:"var(--tp-faint)" }}>Sort by:</span>
+        {[["count","Trades"],["winRate","Win Rate"],["pnl","Total P&L"],["avg","Avg P&L"],["expectancy","Expectancy"]].map(([k,label]) => (
+          <button key={k} onClick={()=>setSortBy(k)} style={{ padding:"4px 10px", borderRadius:6, border:`1px solid ${sortBy===k?"rgba(99,102,241,0.4)":"var(--tp-border-l)"}`, background: sortBy===k ? "rgba(99,102,241,0.15)" : "var(--tp-card)", color: sortBy===k ? "#a5b4fc" : "var(--tp-faint)", cursor:"pointer", fontSize:10, fontWeight:600 }}>{label}</button>
+        ))}
+      </div>
+
+      {/* Setup cards */}
+      <div style={{ display:"grid", gap:10 }}>
+        {sorted.map(s => {
+          const isExpanded = expandedSetup === s.name;
+          const sparkColor = s.totalPnL >= 0 ? "#4ade80" : "#f87171";
+          return (
+            <div key={s.name} style={{ background:"var(--tp-panel)", border:`1px solid ${isExpanded ? "rgba(99,102,241,0.3)" : "var(--tp-panel-b)"}`, borderRadius:12, overflow:"hidden", transition:"border-color 0.2s" }}>
+              {/* Card header — always visible */}
+              <div onClick={()=>setExpandedSetup(isExpanded ? null : s.name)} style={{ padding:"14px 18px", cursor:"pointer", display:"flex", alignItems:"center", gap:14 }}>
+                {/* Name + badges */}
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4, flexWrap:"wrap" }}>
+                    <span style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)" }}>{s.name}</span>
+                    <span style={{ fontSize:9, color:"var(--tp-faint)", background:"var(--tp-card)", padding:"2px 6px", borderRadius:4 }}>{s.category}</span>
+                  </div>
+                  <div style={{ display:"flex", gap:12, fontSize:11, color:"var(--tp-faint)" }}>
+                    <span>{s.count} trades</span>
+                    <span style={{ color: s.winRate >= 55 ? "#4ade80" : s.winRate < 40 ? "#f87171" : "#eab308" }}>{s.winRate.toFixed(1)}% WR</span>
+                    <span style={{ color: s.avgPnL >= 0 ? "#4ade80" : "#f87171" }}>{fmt(s.avgPnL)} avg</span>
+                  </div>
+                </div>
+                {/* Mini sparkline */}
+                {s.cumPnL.length > 1 && (
+                  <div style={{ width:80, height:30, flexShrink:0 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={s.cumPnL} margin={{ top:0, right:0, bottom:0, left:0 }}>
+                        <Area type="monotone" dataKey="pnl" stroke={sparkColor} fill={sparkColor} fillOpacity={0.15} strokeWidth={1.5} dot={false}/>
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+                {/* Total P&L */}
+                <div style={{ textAlign:"right", flexShrink:0 }}>
+                  <div style={{ fontSize:16, fontWeight:800, color: s.totalPnL >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fmt(s.totalPnL)}</div>
+                  <div style={{ fontSize:9, color:"var(--tp-faintest)" }}>total P&L</div>
+                </div>
+                {isExpanded ? <ChevronDown size={16} color="var(--tp-faint)"/> : <ChevronRight size={16} color="var(--tp-faint)"/>}
+              </div>
+
+              {/* Expanded details */}
+              {isExpanded && (
+                <div style={{ padding:"0 18px 18px", borderTop:"1px solid var(--tp-border-l)" }}>
+                  {/* Stat grid */}
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(110px, 1fr))", gap:8, marginTop:14, marginBottom:16 }}>
+                    {[
+                      ["Win Rate", `${s.winRate.toFixed(1)}%`, s.winRate >= 55 ? "#4ade80" : s.winRate < 40 ? "#f87171" : "#eab308"],
+                      ["Record", `${s.wins}W / ${s.losses}L`, "#60a5fa"],
+                      ["Avg Win", fmt(s.avgWin), "#4ade80"],
+                      ["Avg Loss", fmt(-s.avgLoss), "#f87171"],
+                      ["Profit Factor", s.profitFactor === Infinity ? "∞" : s.profitFactor.toFixed(2), s.profitFactor >= 1.5 ? "#4ade80" : "#f87171"],
+                      ["Expectancy", fmt(s.expectancy), s.expectancy >= 0 ? "#4ade80" : "#f87171"],
+                      ["Best Trade", s.bestTrade ? `${fmt(s.bestTrade.pnl)} (${s.bestTrade.ticker})` : "—", "#4ade80"],
+                      ["Worst Trade", s.worstTrade ? `${fmt(s.worstTrade.pnl)} (${s.worstTrade.ticker})` : "—", "#f87171"],
+                      ["Best Streak", s.maxWinStreak > 0 ? `${s.maxWinStreak}W` : "—", "#4ade80"],
+                      ["Worst Streak", s.maxLoseStreak > 0 ? `${s.maxLoseStreak}L` : "—", "#f87171"],
+                    ].map(([label, val, color]) => (
+                      <div key={label} style={{ background:"var(--tp-card)", borderRadius:8, padding:"10px 12px", textAlign:"center" }}>
+                        <div style={{ fontSize:9, color:"var(--tp-faintest)", textTransform:"uppercase", marginBottom:3 }}>{label}</div>
+                        <div style={{ fontSize:13, fontWeight:700, color, fontFamily:"'JetBrains Mono', monospace" }}>{val}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Day of week breakdown */}
+                  <div style={{ marginBottom:16 }}>
+                    <div style={{ fontSize:11, color:"var(--tp-faint)", fontWeight:600, textTransform:"uppercase", marginBottom:8 }}>Performance by Day</div>
+                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                      {DAYS.map(d => {
+                        const data = s.byDay[d];
+                        if (!data) return <div key={d} style={{ flex:1, minWidth:52, background:"var(--tp-card)", borderRadius:6, padding:"8px 6px", textAlign:"center", opacity:0.4 }}><div style={{ fontSize:10, color:"var(--tp-faintest)", marginBottom:2 }}>{d}</div><div style={{ fontSize:11, color:"var(--tp-faintest)" }}>—</div></div>;
+                        const wr = data.count > 0 ? (data.wins / data.count) * 100 : 0;
+                        return (
+                          <div key={d} style={{ flex:1, minWidth:52, background:"var(--tp-card)", borderRadius:6, padding:"8px 6px", textAlign:"center" }}>
+                            <div style={{ fontSize:10, color:"var(--tp-faintest)", marginBottom:2 }}>{d}</div>
+                            <div style={{ fontSize:12, fontWeight:700, color: data.pnl >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fmt(data.pnl)}</div>
+                            <div style={{ fontSize:9, color:"var(--tp-faintest)" }}>{data.count}t · {wr.toFixed(0)}%</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Cumulative P&L chart */}
+                  {s.cumPnL.length > 1 && (
+                    <div>
+                      <div style={{ fontSize:11, color:"var(--tp-faint)", fontWeight:600, textTransform:"uppercase", marginBottom:8 }}>Cumulative P&L</div>
+                      <div style={{ height:120, background:"var(--tp-card)", borderRadius:8, padding:"8px 4px" }}>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={s.cumPnL} margin={{ top:4, right:8, bottom:0, left:8 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)"/>
+                            <XAxis dataKey="date" tick={{ fontSize:9, fill:"#5c6070" }} tickLine={false} axisLine={false}/>
+                            <YAxis tick={{ fontSize:9, fill:"#5c6070" }} tickLine={false} axisLine={false} tickFormatter={v => v >= 1000 || v <= -1000 ? `$${(v/1000).toFixed(1)}k` : `$${v}`}/>
+                            <Tooltip formatter={v=>[fmt(v),"P&L"]} contentStyle={{ background:"#1a1b23", border:"1px solid #2a2b35", borderRadius:8, fontSize:11 }} labelStyle={{ color:"#8a8f9e" }}/>
+                            <Area type="monotone" dataKey="pnl" stroke={sparkColor} fill={sparkColor} fillOpacity={0.12} strokeWidth={2}/>
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Recent trades list */}
+                  <div style={{ marginTop:16 }}>
+                    <div style={{ fontSize:11, color:"var(--tp-faint)", fontWeight:600, textTransform:"uppercase", marginBottom:8 }}>Recent Trades ({Math.min(s.trades.length, 10)} of {s.trades.length})</div>
+                    <div style={{ display:"grid", gap:3 }}>
+                      {[...s.trades].sort((a,b) => new Date(b.date) - new Date(a.date)).slice(0, 10).map(t => (
+                        <div key={t.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 10px", background:"var(--tp-card)", borderRadius:6, fontSize:11 }}>
+                          <span style={{ color:"var(--tp-faintest)", fontFamily:"'JetBrains Mono', monospace", fontSize:10, minWidth:72 }}>{t.date}</span>
+                          <span style={{ fontWeight:600, color:"var(--tp-text)", minWidth:50 }}>{t.ticker}</span>
+                          <span style={{ color: t.direction === "Long" ? "#4ade80" : "#f87171", fontSize:9, fontWeight:600, minWidth:35 }}>{t.direction}</span>
+                          <span style={{ flex:1 }}/>
+                          <span style={{ fontWeight:700, color: t.pnl >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fmt(t.pnl)}</span>
+                          {t.grade && <span style={{ fontSize:9, color:t.grade==="A"?"#4ade80":t.grade==="B"?"#60a5fa":t.grade==="C"?"#eab308":"#f87171", fontWeight:700 }}>{t.grade}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -5202,6 +6242,7 @@ export default function App() {
   const [playbooks, setPlaybooks] = useState([]);
   const [journal, setJournal] = useState([]);
   const [goals, setGoals] = useState({});
+  const [dividends, setDividends] = useState([]);
   const [prefs, setPrefs] = useState({ theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });
   const [tab, setTab] = useState("dashboard");
   const [showTradeModal, setShowTradeModal] = useState(false);
@@ -5290,6 +6331,7 @@ export default function App() {
 
         /* Unrealized P&L banner */
         .tp-unrealized-banner { grid-template-columns: 1fr !important; }
+        .tp-risk-calc-grid { grid-template-columns: 1fr 1fr !important; }
       }
 
       @media (max-width: 480px) {
@@ -5302,7 +6344,7 @@ export default function App() {
     `;
   }, [theme]);
 
-  useEffect(() => { Promise.all([loadData(STORAGE_KEY),loadData(WATCHLIST_KEY),loadData(WHEEL_KEY),loadData(FUTURES_SETTINGS_KEY),loadData(CUSTOM_FIELDS_KEY),loadData(ACCOUNT_BALANCES_KEY),loadData(PLAYBOOK_KEY),loadData(PREFS_KEY),loadData(JOURNAL_KEY),loadData(GOALS_KEY)]).then(([t,w,wh,f,c,ab,pb,pr,jn,gl])=>{setTrades(t);setWatchlists(w);setWheelTrades(wh);setFuturesSettings(f);setCustomFields(c && Object.keys(c).length > 0 ? c : DEFAULT_CUSTOM_FIELDS);setAccountBalances(ab && typeof ab === "object" && !Array.isArray(ab) ? ab : {});setPlaybooks(Array.isArray(pb) ? pb : []);setPrefs(pr && typeof pr === "object" && !Array.isArray(pr) ? { theme: pr.theme || "dark", logo: pr.logo || "", banner: pr.banner || "", tabOrder: Array.isArray(pr.tabOrder) ? pr.tabOrder : [], dashWidgets: Array.isArray(pr.dashWidgets) ? pr.dashWidgets : [] } : { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });setJournal(Array.isArray(jn) ? jn : []);setGoals(gl && typeof gl === "object" && !Array.isArray(gl) ? gl : {});setLoaded(true);}); }, []);
+  useEffect(() => { Promise.all([loadData(STORAGE_KEY),loadData(WATCHLIST_KEY),loadData(WHEEL_KEY),loadData(FUTURES_SETTINGS_KEY),loadData(CUSTOM_FIELDS_KEY),loadData(ACCOUNT_BALANCES_KEY),loadData(PLAYBOOK_KEY),loadData(PREFS_KEY),loadData(JOURNAL_KEY),loadData(GOALS_KEY),loadData(DIVIDENDS_KEY)]).then(([t,w,wh,f,c,ab,pb,pr,jn,gl,dv])=>{setTrades(t);setWatchlists(w);setWheelTrades(wh);setFuturesSettings(f);setCustomFields(c && Object.keys(c).length > 0 ? c : DEFAULT_CUSTOM_FIELDS);setAccountBalances(ab && typeof ab === "object" && !Array.isArray(ab) ? ab : {});setPlaybooks(Array.isArray(pb) ? pb : []);setPrefs(pr && typeof pr === "object" && !Array.isArray(pr) ? { theme: pr.theme || "dark", logo: pr.logo || "", banner: pr.banner || "", tabOrder: Array.isArray(pr.tabOrder) ? pr.tabOrder : [], dashWidgets: Array.isArray(pr.dashWidgets) ? pr.dashWidgets : [] } : { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });setJournal(Array.isArray(jn) ? jn : []);setGoals(gl && typeof gl === "object" && !Array.isArray(gl) ? gl : {});setDividends(Array.isArray(dv) ? dv : []);setLoaded(true);}); }, []);
   useEffect(() => { if(loaded) saveData(STORAGE_KEY, trades); }, [trades, loaded]);
   useEffect(() => { if(loaded) saveData(WATCHLIST_KEY, watchlists); }, [watchlists, loaded]);
   useEffect(() => { if(loaded) saveData(WHEEL_KEY, wheelTrades); }, [wheelTrades, loaded]);
@@ -5312,6 +6354,7 @@ export default function App() {
   useEffect(() => { if(loaded) saveData(PLAYBOOK_KEY, playbooks); }, [playbooks, loaded]);
   useEffect(() => { if(loaded) saveData(JOURNAL_KEY, journal); }, [journal, loaded]);
   useEffect(() => { if(loaded) saveData(GOALS_KEY, goals); }, [goals, loaded]);
+  useEffect(() => { if(loaded) saveData(DIVIDENDS_KEY, dividends); }, [dividends, loaded]);
   useEffect(() => { if(loaded) saveData(PREFS_KEY, prefs); }, [prefs, loaded]);
 
   const handleTradeSave = useCallback(trade => {
@@ -5350,18 +6393,15 @@ export default function App() {
             </div>
           </div>
           <div className="tp-header-right" style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <button onClick={()=>setPrefs(p=>({...p,theme:p.theme==="dark"?"light":"dark"}))} style={{ width:32, height:32, borderRadius:8, border:`1px solid ${theme.borderLight}`, background:theme.inputBg, color:theme.textMuted, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }} title={`Switch to ${prefs.theme==="dark"?"light":"dark"} mode`}>
-              {prefs.theme==="dark" ? <Sun size={14}/> : <Moon size={14}/>}
-            </button>
             {headerBtn}
           </div>
         </div>
       </div>
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets}/>}
+        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
         {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme}/>}
-        {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme}/>}
+        {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades}/>}
         {tab==="review" && <ReviewTab trades={trades} accountBalances={accountBalances} theme={theme}/>}
         {tab==="playbook" && <PlaybookTab playbooks={playbooks} onSave={setPlaybooks} trades={trades} theme={theme}/>}
         {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme}/>}
