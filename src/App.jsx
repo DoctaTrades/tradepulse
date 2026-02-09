@@ -6176,26 +6176,215 @@ const TRADEPULSE_HEADERS = ["Date","Ticker","Asset Type","Direction","Status","E
 
 // Smart column mapping for common broker formats
 const BROKER_COLUMN_ALIASES = {
-  date: ["date","trade date","exec date","execution date","date/time","order date","close date","settlement date"],
-  ticker: ["ticker","symbol","instrument","underlying","stock","security","description"],
-  direction: ["direction","side","action","type","buy/sell","order type","transaction type"],
-  entryPrice: ["entry price","price","avg price","fill price","entry","open price","exec price","cost basis","trade price"],
+  date: ["date","trade date","exec date","execution date","date/time","order date","close date","settlement date","placed time","filled time","time","run date","activity date","process date"],
+  ticker: ["ticker","symbol","instrument","underlying","stock","security"],
+  direction: ["direction","side","action","buy/sell","order type","transaction type","trans code"],
+  entryPrice: ["entry price","price","avg price","fill price","entry","open price","exec price","cost basis","trade price","average price"],
   exitPrice: ["exit price","close price","closing price"],
-  quantity: ["quantity","qty","shares","amount","contracts","size","volume","filled qty"],
+  quantity: ["quantity","qty","shares","contracts","size","volume","filled qty","filled","total qty"],
   fees: ["fees","commission","commissions","comm","fee","charges","reg fees","total fees"],
-  pnl: ["p&l","pnl","profit","profit/loss","gain/loss","net profit","realized p&l","realized gain","net amount","net proceeds","proceeds","amount","total"],
-  assetType: ["asset type","type","asset class","product","security type","asset","instrument type"],
-  status: ["status","state","trade status"],
+  pnl: ["p&l","pnl","profit","profit/loss","gain/loss","net profit","realized p&l","realized gain","net amount","net proceeds","proceeds"],
+  assetType: ["asset type","asset class","product","security type","asset","instrument type"],
+  status: ["status","state","trade status","order status"],
   stopLoss: ["stop loss","stop","sl"],
   takeProfit: ["take profit","target","tp","limit"],
-  notes: ["notes","memo","comment","description","remarks"],
+  notes: ["notes","memo","comment","remarks"],
+  name: ["name","description","security name","instrument name"],
   account: ["account","acct","account name","account number","account #","portfolio"],
   strategy: ["strategy","trade type","setup"],
-  entryTime: ["entry time","time","exec time","execution time"],
+  entryTime: ["entry time","exec time","execution time"],
   exitTime: ["exit time","close time"],
   grade: ["grade","rating","score"],
   optionsStrategyType: ["options strategy","option type","option strategy"],
+  tif: ["time-in-force","tif","time in force","duration"],
 };
+
+// Known futures symbol patterns
+const FUTURES_SYMBOLS = /^(MES|MNQ|MYM|M2K|ES|NQ|YM|RTY|CL|GC|SI|ZB|ZN|ZF|ZT|HG|NG|6E|6J|6B|6A|6C|ZC|ZS|ZW|ZL|ZM|HE|LE|NKD|EMD|MGC|SIL|MCL)/i;
+const FUTURES_TICK_MAP = {
+  MES:{tick:0.25,val:1.25}, MESH:{tick:0.25,val:1.25}, ES:{tick:0.25,val:12.50}, ESH:{tick:0.25,val:12.50},
+  MNQ:{tick:0.25,val:0.50}, MNQH:{tick:0.25,val:0.50}, NQ:{tick:0.25,val:5.00}, NQH:{tick:0.25,val:5.00},
+  MYM:{tick:1,val:0.50}, MYMH:{tick:1,val:0.50}, YM:{tick:1,val:5.00}, YMH:{tick:1,val:5.00},
+  M2K:{tick:0.10,val:0.50}, M2KH:{tick:0.10,val:0.50}, RTY:{tick:0.10,val:5.00}, RTYH:{tick:0.10,val:5.00},
+  CL:{tick:0.01,val:10.00}, MCL:{tick:0.01,val:1.00},
+  GC:{tick:0.10,val:10.00}, MGC:{tick:0.10,val:1.00},
+  SI:{tick:0.005,val:25.00}, SIL:{tick:0.005,val:2.50},
+  NKD:{tick:5,val:2.50},
+};
+
+function detectAssetTypeFromSymbol(symbol, name) {
+  if (!symbol) return "Stock";
+  const s = symbol.toUpperCase();
+  if (FUTURES_SYMBOLS.test(s)) return "Futures";
+  // Options: symbols often contain dates/strikes like AAPL250221C00150000 or have Call/Put in name
+  if (/\d{6}[CP]\d+/.test(s) || /\b(call|put)\b/i.test(name || "")) return "Options";
+  return "Stock";
+}
+
+function getFuturesBaseSymbol(symbol) {
+  const s = symbol.toUpperCase();
+  // Match base + optional month code (1 letter) + year code (1-2 digits), e.g. MESH6, M2KH6, ESH26
+  const match = s.match(/^(MES|MNQ|MYM|M2K|ES|NQ|YM|RTY|CL|GC|SI|ZB|ZN|ZF|ZT|HG|NG|MCL|MGC|SIL|NKD)[FGHJKMNQUVXZ]?\d{0,2}$/);
+  if (match) return match[1];
+  return s.replace(/[FGHJKMNQUVXZ]\d{1,2}$/, "");
+}
+
+function cleanPrice(val) {
+  if (!val) return "";
+  return String(val).replace(/^@/, "").replace(/[,$]/g, "").trim();
+}
+
+// ── Smart trade pairing engine ──
+function pairTrades(fills, targetAccount) {
+  // Group fills by symbol
+  const bySymbol = {};
+  fills.forEach(f => {
+    const sym = f.ticker;
+    if (!bySymbol[sym]) bySymbol[sym] = [];
+    bySymbol[sym].push(f);
+  });
+
+  const pairedTrades = [];
+  const openTrades = [];
+
+  Object.entries(bySymbol).forEach(([symbol, symbolFills]) => {
+    // Sort chronologically by filled time
+    symbolFills.sort((a, b) => new Date(a.filledTime || a.date) - new Date(b.filledTime || b.date));
+
+    const assetType = symbolFills[0].assetType;
+    const isFutures = assetType === "Futures";
+    const baseSym = isFutures ? getFuturesBaseSymbol(symbol) : symbol;
+    const tickInfo = isFutures ? (FUTURES_TICK_MAP[baseSym] || FUTURES_TICK_MAP[symbol.toUpperCase().replace(/[FGHJKMNQUVXZ]\d{1,2}$/, "")] || null) : null;
+
+    // FIFO matching: maintain a queue of open fills
+    const openQueue = []; // { side, qty, price, date, time }
+
+    symbolFills.forEach(fill => {
+      const fillSide = fill.direction; // "Long" (buy) or "Short" (sell)
+      const fillQty = parseFloat(fill.quantity) || 0;
+      const fillPrice = parseFloat(fill.entryPrice) || 0;
+      if (fillQty <= 0 || fillPrice <= 0) return;
+
+      // Check if this fill closes any open position (opposite side)
+      let remaining = fillQty;
+
+      while (remaining > 0 && openQueue.length > 0) {
+        const head = openQueue[0];
+        // Only match opposite sides
+        if (head.side === fillSide) break;
+
+        const matchQty = Math.min(remaining, head.qty);
+
+        // Determine entry and exit
+        const isEntryBuy = head.side === "Long";
+        const entryPrice = head.price;
+        const exitPrice = fillPrice;
+        const entryDate = head.date;
+        const exitDate = fill.date;
+        const entryTime = head.time;
+        const exitTime = fill.time;
+        const direction = head.side;
+
+        // Calculate P&L
+        let pnl;
+        if (isFutures && tickInfo) {
+          const ticks = isEntryBuy ? (exitPrice - entryPrice) / tickInfo.tick : (entryPrice - exitPrice) / tickInfo.tick;
+          pnl = Math.round(ticks * tickInfo.val * matchQty * 100) / 100;
+        } else {
+          pnl = isEntryBuy
+            ? Math.round((exitPrice - entryPrice) * matchQty * 100) / 100
+            : Math.round((entryPrice - exitPrice) * matchQty * 100) / 100;
+        }
+
+        pairedTrades.push({
+          id: Date.now() + Math.random(),
+          date: entryDate,
+          ticker: isFutures ? baseSym : symbol,
+          assetType,
+          direction,
+          status: "Closed",
+          entryPrice: String(entryPrice),
+          exitPrice: String(exitPrice),
+          quantity: String(matchQty),
+          fees: "0",
+          pnl,
+          stopLoss: "", takeProfit: "", grade: "",
+          notes: isFutures ? `${symbol} | Paired from broker CSV` : "Paired from broker CSV",
+          account: targetAccount || "",
+          timeframe: "", tradeStrategy: "", strategy: "Day Trade", playbook: "",
+          entryTime, exitTime,
+          optionsStrategyType: "Single Leg",
+          legs: [{ id: Date.now(), action: "Buy", type: "Call", strike: "", contracts: "1", entryPremium: "", exitPremium: "", expiration: "", rolls: [] }],
+          emotions: [], screenshots: [],
+          futuresContract: isFutures ? symbol : "", tickSize: tickInfo ? String(tickInfo.tick) : "", tickValue: tickInfo ? String(tickInfo.val) : "",
+        });
+
+        remaining -= matchQty;
+        head.qty -= matchQty;
+        if (head.qty <= 0) openQueue.shift();
+      }
+
+      // If there's remaining quantity, it becomes an open position
+      if (remaining > 0) {
+        openQueue.push({
+          side: fillSide,
+          qty: remaining,
+          price: fillPrice,
+          date: fill.date,
+          time: fill.time || "",
+        });
+      }
+    });
+
+    // Remaining in queue are open positions
+    openQueue.forEach(pos => {
+      openTrades.push({
+        id: Date.now() + Math.random(),
+        date: pos.date,
+        ticker: isFutures ? baseSym : symbol,
+        assetType,
+        direction: pos.side,
+        status: "Open",
+        entryPrice: String(pos.price),
+        exitPrice: "",
+        quantity: String(pos.qty),
+        fees: "0",
+        pnl: null,
+        stopLoss: "", takeProfit: "", grade: "",
+        notes: isFutures ? `${symbol} | Open position from broker CSV` : "Open position from broker CSV",
+        account: targetAccount || "",
+        timeframe: "", tradeStrategy: "", strategy: "Day Trade", playbook: "",
+        entryTime: pos.time || "", exitTime: "",
+        optionsStrategyType: "Single Leg",
+        legs: [{ id: Date.now(), action: "Buy", type: "Call", strike: "", contracts: "1", entryPremium: "", exitPremium: "", expiration: "", rolls: [] }],
+        emotions: [], screenshots: [],
+        futuresContract: isFutures ? symbol : "", tickSize: "", tickValue: "",
+      });
+    });
+  });
+
+  // Sort all by date descending
+  pairedTrades.sort((a, b) => new Date(b.date) - new Date(a.date));
+  openTrades.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  return { paired: pairedTrades, open: openTrades, all: [...pairedTrades, ...openTrades] };
+}
+
+// Detect if CSV is order-based (individual fills) vs trade-based (round trips)
+function detectCSVFormat(headers, rows) {
+  const h = headers.map(x => x.toLowerCase().trim());
+  const hasSide = h.some(x => ["side","action","buy/sell","direction","trans code"].includes(x));
+  const hasEntryAndExit = h.some(x => x.includes("entry")) && h.some(x => x.includes("exit") || x.includes("close"));
+  const hasStatus = h.some(x => ["status","state","order status"].includes(x));
+
+  // If has Side column + Status column + no separate entry/exit → order-based (Webull, IBKR, Schwab)
+  if (hasSide && !hasEntryAndExit) return "order-based";
+  // If has both entry and exit columns → trade-based (TradePulse export, ThinkOrSwim)
+  if (hasEntryAndExit) return "trade-based";
+  // Default: if has side, assume order-based
+  if (hasSide) return "order-based";
+  return "trade-based";
+}
 
 function detectColumnMapping(headers) {
   const mapping = {};
@@ -6273,6 +6462,8 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
   const [exportAccount, setExportAccount] = useState("All");
   const [fileName, setFileName] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [csvFormat, setCsvFormat] = useState("trade-based"); // trade-based | order-based
+  const [pairStats, setPairStats] = useState(null);
 
   const accounts = [...new Set([
     ...Object.keys(accountBalances || {}),
@@ -6321,51 +6512,105 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
       setCsvData({ headers, rows });
       const autoMapping = detectColumnMapping(headers);
       setColumnMapping(autoMapping);
+      const format = detectCSVFormat(headers, rows);
+      setCsvFormat(format);
       setStep(2);
     };
     reader.readAsText(file);
   };
 
-  // ── IMPORT: Build preview from mapping ──
+  // ── IMPORT: Build preview ──
   const buildPreview = () => {
     if (!csvData) return;
-    const mapped = csvData.rows.map((row, idx) => {
-      const get = (field) => columnMapping[field] !== undefined ? row[columnMapping[field]] || "" : "";
-      const pnlVal = get("pnl");
-      const parsedPnl = pnlVal ? parseFloat(pnlVal.replace(/[$,()]/g, (m) => m === "(" ? "-" : m === ")" ? "" : "")) : null;
 
-      return {
-        id: Date.now() + idx + Math.random(),
-        date: parseDate(get("date")),
-        ticker: (get("ticker") || "").toUpperCase().replace(/[^A-Z0-9./]/g, "").substring(0, 10),
-        assetType: parseAssetType(get("assetType")),
-        direction: parseDirection(get("direction")),
-        status: parsedPnl !== null ? "Closed" : "Open",
-        entryPrice: get("entryPrice").replace(/[$,]/g, "") || "",
-        exitPrice: get("exitPrice").replace(/[$,]/g, "") || "",
-        quantity: get("quantity").replace(/[^0-9.-]/g, "") || "",
-        fees: get("fees").replace(/[$,]/g, "") || "0",
-        pnl: parsedPnl,
-        stopLoss: get("stopLoss").replace(/[$,]/g, "") || "",
-        takeProfit: get("takeProfit").replace(/[$,]/g, "") || "",
-        grade: get("grade") || "",
-        notes: get("notes") || "",
-        account: targetAccount || "",
-        timeframe: "",
-        tradeStrategy: get("strategy") || "",
-        strategy: "Day Trade",
-        playbook: "",
-        entryTime: get("entryTime") || "",
-        exitTime: get("exitTime") || "",
-        optionsStrategyType: get("optionsStrategyType") || "Single Leg",
-        legs: [{ id: Date.now(), action: "Buy", type: "Call", strike: "", contracts: "1", entryPremium: "", exitPremium: "", expiration: "", rolls: [] }],
-        emotions: [],
-        screenshots: [],
-        futuresContract: "", tickSize: "", tickValue: "",
-      };
-    }).filter(t => t.ticker);
-    setImportPreview(mapped);
-    setStep(3);
+    if (csvFormat === "order-based") {
+      // Smart pairing mode: extract fills, filter, pair
+      const get = (row, field) => columnMapping[field] !== undefined ? row[columnMapping[field]] || "" : "";
+
+      const statusCol = columnMapping.status;
+      const fills = csvData.rows
+        .filter(row => {
+          if (statusCol !== undefined) {
+            const st = (row[statusCol] || "").toLowerCase().trim();
+            if (["cancelled","canceled","failed","rejected","expired","pending"].includes(st)) return false;
+          }
+          return true;
+        })
+        .map(row => {
+          const symbol = (get(row, "ticker") || "").toUpperCase().replace(/\r/g, "").trim();
+          const name = get(row, "name") || "";
+          if (!symbol) return null;
+          const side = get(row, "direction");
+          const price = cleanPrice(get(row, "entryPrice"));
+          const qty = cleanPrice(get(row, "quantity"));
+          const dateRaw = get(row, "date");
+          const assetType = detectAssetTypeFromSymbol(symbol, name);
+
+          // Parse datetime
+          const dateParsed = parseDate(dateRaw);
+          let time = "";
+          const timeMatch = dateRaw.match(/(\d{1,2}:\d{2}(:\d{2})?)\s*(AM|PM|EST|CST|PST|MST|EDT|CDT|PDT|MDT)?/i);
+          if (timeMatch) time = timeMatch[1];
+
+          return {
+            ticker: symbol,
+            direction: parseDirection(side),
+            entryPrice: price,
+            quantity: qty,
+            date: dateParsed,
+            time,
+            filledTime: dateRaw,
+            assetType,
+            name,
+          };
+        })
+        .filter(f => f && f.ticker && parseFloat(f.entryPrice) > 0 && parseFloat(f.quantity) > 0);
+
+      const result = pairTrades(fills, targetAccount);
+      setImportPreview(result.all);
+      setPairStats({ total: fills.length, paired: result.paired.length, open: result.open.length, filtered: csvData.rows.length - fills.length });
+      setStep(3);
+    } else {
+      // Traditional mode: each row is a trade
+      const mapped = csvData.rows.map((row, idx) => {
+        const get = (field) => columnMapping[field] !== undefined ? row[columnMapping[field]] || "" : "";
+        const pnlVal = get("pnl");
+        const parsedPnl = pnlVal ? parseFloat(pnlVal.replace(/[$,()]/g, (m) => m === "(" ? "-" : m === ")" ? "" : "")) : null;
+
+        return {
+          id: Date.now() + idx + Math.random(),
+          date: parseDate(get("date")),
+          ticker: (get("ticker") || "").toUpperCase().replace(/[^A-Z0-9./]/g, "").substring(0, 10),
+          assetType: parseAssetType(get("assetType")),
+          direction: parseDirection(get("direction")),
+          status: parsedPnl !== null ? "Closed" : "Open",
+          entryPrice: cleanPrice(get("entryPrice")),
+          exitPrice: cleanPrice(get("exitPrice")),
+          quantity: get("quantity").replace(/[^0-9.-]/g, "") || "",
+          fees: get("fees").replace(/[$,]/g, "") || "0",
+          pnl: parsedPnl,
+          stopLoss: get("stopLoss").replace(/[$,]/g, "") || "",
+          takeProfit: get("takeProfit").replace(/[$,]/g, "") || "",
+          grade: get("grade") || "",
+          notes: get("notes") || "",
+          account: targetAccount || "",
+          timeframe: "",
+          tradeStrategy: get("strategy") || "",
+          strategy: "Day Trade",
+          playbook: "",
+          entryTime: get("entryTime") || "",
+          exitTime: get("exitTime") || "",
+          optionsStrategyType: get("optionsStrategyType") || "Single Leg",
+          legs: [{ id: Date.now(), action: "Buy", type: "Call", strike: "", contracts: "1", entryPremium: "", exitPremium: "", expiration: "", rolls: [] }],
+          emotions: [],
+          screenshots: [],
+          futuresContract: "", tickSize: "", tickValue: "",
+        };
+      }).filter(t => t.ticker);
+      setImportPreview(mapped);
+      setPairStats(null);
+      setStep(3);
+    }
   };
 
   // ── IMPORT: Execute ──
@@ -6384,7 +6629,7 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
     setStep(4);
   };
 
-  const reset = () => { setMode(null); setStep(1); setCsvData(null); setColumnMapping({}); setTargetAccount(""); setImportPreview([]); setImportResult(null); setFileName(""); };
+  const reset = () => { setMode(null); setStep(1); setCsvData(null); setColumnMapping({}); setTargetAccount(""); setImportPreview([]); setImportResult(null); setFileName(""); setCsvFormat("trade-based"); setPairStats(null); };
   const mappableFields = [
     { key:"date", label:"Date", required:true },
     { key:"ticker", label:"Ticker", required:true },
@@ -6415,8 +6660,8 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
           <div onClick={()=>setMode("import")} style={{ background:"var(--tp-panel)", border:"1px solid rgba(74,222,128,0.15)", borderRadius:14, padding:"32px 24px", cursor:"pointer", textAlign:"center", transition:"border-color 0.2s" }} onMouseEnter={e=>e.currentTarget.style.borderColor="rgba(74,222,128,0.4)"} onMouseLeave={e=>e.currentTarget.style.borderColor="rgba(74,222,128,0.15)"}>
             <Upload size={36} color="#4ade80" style={{ margin:"0 auto 14px", display:"block" }}/>
             <div style={{ fontSize:16, fontWeight:700, color:"var(--tp-text)", marginBottom:6 }}>Import Trades</div>
-            <div style={{ fontSize:12, color:"var(--tp-muted)", lineHeight:1.5 }}>Upload a CSV from your broker and map columns to TradePulse fields. Assign to a specific account.</div>
-            <div style={{ fontSize:10, color:"var(--tp-faintest)", marginTop:10 }}>Supports: Schwab, TD/thinkorswim, IBKR, Fidelity, and generic CSV</div>
+            <div style={{ fontSize:12, color:"var(--tp-muted)", lineHeight:1.5 }}>Upload a CSV from your broker. Smart auto-pairing matches buys with sells and calculates P&L automatically.</div>
+            <div style={{ fontSize:10, color:"var(--tp-faintest)", marginTop:10 }}>Supports: Webull, Schwab, TD/thinkorswim, IBKR, Fidelity, and generic CSV</div>
           </div>
           <div onClick={()=>setMode("export")} style={{ background:"var(--tp-panel)", border:"1px solid rgba(96,165,250,0.15)", borderRadius:14, padding:"32px 24px", cursor:"pointer", textAlign:"center", transition:"border-color 0.2s" }} onMouseEnter={e=>e.currentTarget.style.borderColor="rgba(96,165,250,0.4)"} onMouseLeave={e=>e.currentTarget.style.borderColor="rgba(96,165,250,0.15)"}>
             <Download size={36} color="#60a5fa" style={{ margin:"0 auto 14px", display:"block" }}/>
@@ -6515,12 +6760,23 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
           {/* Step 2: Column Mapping */}
           {step === 2 && csvData && (
             <div>
-              <div style={{ fontSize:12, color:"var(--tp-muted)", marginBottom:12 }}>
+              <div style={{ fontSize:12, color:"var(--tp-muted)", marginBottom:8 }}>
                 <FileText size={12} style={{ display:"inline", marginRight:4, verticalAlign:"middle" }}/> {fileName} — {csvData.rows.length} rows, {csvData.headers.length} columns
                 {targetAccount && <span style={{ color:"#4ade80", marginLeft:8 }}>→ {targetAccount}</span>}
               </div>
 
-              <div style={{ fontSize:11, color:"var(--tp-faint)", marginBottom:14 }}>Map your CSV columns to TradePulse fields. Auto-detected mappings are pre-filled — adjust as needed.</div>
+              {/* Detected format badge */}
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
+                <span style={{ fontSize:11, color:"var(--tp-faint)" }}>Detected format:</span>
+                <button onClick={()=>setCsvFormat("order-based")} style={{ padding:"4px 10px", borderRadius:5, border:`1px solid ${csvFormat==="order-based"?"#4ade80":"var(--tp-border-l)"}`, background:csvFormat==="order-based"?"rgba(74,222,128,0.1)":"transparent", color:csvFormat==="order-based"?"#4ade80":"var(--tp-faint)", cursor:"pointer", fontSize:10, fontWeight:600 }}>Order-Based (auto-pair)</button>
+                <button onClick={()=>setCsvFormat("trade-based")} style={{ padding:"4px 10px", borderRadius:5, border:`1px solid ${csvFormat==="trade-based"?"#60a5fa":"var(--tp-border-l)"}`, background:csvFormat==="trade-based"?"rgba(96,165,250,0.1)":"transparent", color:csvFormat==="trade-based"?"#60a5fa":"var(--tp-faint)", cursor:"pointer", fontSize:10, fontWeight:600 }}>Trade-Based (1 row = 1 trade)</button>
+              </div>
+
+              {csvFormat === "order-based" && (
+                <div style={{ fontSize:11, color:"var(--tp-muted)", marginBottom:14, padding:"10px 14px", background:"rgba(74,222,128,0.04)", border:"1px solid rgba(74,222,128,0.1)", borderRadius:8, lineHeight:1.6 }}>
+                  <strong style={{ color:"#4ade80" }}>Smart pairing mode:</strong> Each row is a single fill (buy or sell). The importer will automatically match buys with sells (FIFO), calculate P&L, detect futures vs stocks, filter out cancelled orders, and handle partial exits. Unmatched fills become open positions.
+                </div>
+              )}
 
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:16 }}>
                 {mappableFields.map(field => (
@@ -6560,15 +6816,40 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
                   <div style={{ fontSize:13, color:"#4ade80", fontWeight:600 }}>{importPreview.length} trades ready to import</div>
                   {targetAccount && <div style={{ fontSize:11, color:"var(--tp-faint)" }}>All trades will be assigned to: <span style={{ color:"#4ade80", fontWeight:600 }}>{targetAccount}</span></div>}
                 </div>
-                <div style={{ fontSize:11, color:"var(--tp-faint)" }}>
-                  {importPreview.filter(t=>t.pnl!==null).length} with P&L · {importPreview.filter(t=>t.pnl===null).length} without
+                <div style={{ fontSize:11, color:"var(--tp-faint)", textAlign:"right" }}>
+                  {pairStats ? (
+                    <>{pairStats.paired} closed · {pairStats.open} open · {pairStats.filtered} skipped</>
+                  ) : (
+                    <>{importPreview.filter(t=>t.pnl!==null).length} with P&L · {importPreview.filter(t=>t.pnl===null).length} without</>
+                  )}
                 </div>
               </div>
+
+              {pairStats && (
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8, marginBottom:14 }}>
+                  <div style={{ background:"var(--tp-card)", borderRadius:8, padding:"10px 12px", textAlign:"center" }}>
+                    <div style={{ fontSize:18, fontWeight:700, color:"var(--tp-text)" }}>{pairStats.total}</div>
+                    <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase" }}>Total Fills</div>
+                  </div>
+                  <div style={{ background:"var(--tp-card)", borderRadius:8, padding:"10px 12px", textAlign:"center" }}>
+                    <div style={{ fontSize:18, fontWeight:700, color:"#4ade80" }}>{pairStats.paired}</div>
+                    <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase" }}>Paired (Closed)</div>
+                  </div>
+                  <div style={{ background:"var(--tp-card)", borderRadius:8, padding:"10px 12px", textAlign:"center" }}>
+                    <div style={{ fontSize:18, fontWeight:700, color:"#60a5fa" }}>{pairStats.open}</div>
+                    <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase" }}>Open Positions</div>
+                  </div>
+                  <div style={{ background:"var(--tp-card)", borderRadius:8, padding:"10px 12px", textAlign:"center" }}>
+                    <div style={{ fontSize:18, fontWeight:700, color:"var(--tp-muted)" }}>{pairStats.filtered}</div>
+                    <div style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase" }}>Filtered Out</div>
+                  </div>
+                </div>
+              )}
 
               <div style={{ maxHeight:340, overflowY:"auto", borderRadius:10, border:"1px solid var(--tp-border)", marginBottom:16 }}>
                 <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
                   <thead><tr>
-                    {["Date","Ticker","Dir","Asset","Entry","Exit","Qty","P&L","Account"].map(h => <th key={h} style={{ padding:"8px 10px", textAlign:"left", color:"var(--tp-faint)", borderBottom:"1px solid var(--tp-border)", background:"rgba(0,0,0,0.2)", whiteSpace:"nowrap", fontWeight:600, textTransform:"uppercase", letterSpacing:0.5, fontSize:9, position:"sticky", top:0 }}>{h}</th>)}
+                    {["Date","Ticker","Dir","Asset","Status","Entry","Exit","Qty","P&L","Account"].map(h => <th key={h} style={{ padding:"8px 10px", textAlign:"left", color:"var(--tp-faint)", borderBottom:"1px solid var(--tp-border)", background:"rgba(0,0,0,0.2)", whiteSpace:"nowrap", fontWeight:600, textTransform:"uppercase", letterSpacing:0.5, fontSize:9, position:"sticky", top:0 }}>{h}</th>)}
                   </tr></thead>
                   <tbody>
                     {importPreview.slice(0, 50).map((t, i) => (
@@ -6576,9 +6857,10 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
                         <td style={{ padding:"6px 10px", color:"var(--tp-muted)" }}>{t.date}</td>
                         <td style={{ padding:"6px 10px", color:"var(--tp-text)", fontWeight:600 }}>{t.ticker}</td>
                         <td style={{ padding:"6px 10px" }}><span style={{ fontSize:9, fontWeight:600, color:t.direction==="Long"?"#60a5fa":"#f472b6", background:t.direction==="Long"?"rgba(96,165,250,0.12)":"rgba(244,114,182,0.12)", padding:"2px 6px", borderRadius:3 }}>{t.direction}</span></td>
-                        <td style={{ padding:"6px 10px", color:"var(--tp-muted)" }}>{t.assetType}</td>
-                        <td style={{ padding:"6px 10px", color:"var(--tp-text2)", fontFamily:"'JetBrains Mono', monospace" }}>{t.entryPrice || "—"}</td>
-                        <td style={{ padding:"6px 10px", color:"var(--tp-text2)", fontFamily:"'JetBrains Mono', monospace" }}>{t.exitPrice || "—"}</td>
+                        <td style={{ padding:"6px 10px", color:"var(--tp-muted)", fontSize:10 }}>{t.assetType}</td>
+                        <td style={{ padding:"6px 10px" }}><span style={{ fontSize:9, fontWeight:600, color:t.status==="Closed"?"#4ade80":"#60a5fa", background:t.status==="Closed"?"rgba(74,222,128,0.1)":"rgba(96,165,250,0.1)", padding:"2px 6px", borderRadius:3 }}>{t.status}</span></td>
+                        <td style={{ padding:"6px 10px", color:"var(--tp-text2)", fontFamily:"'JetBrains Mono', monospace", fontSize:11 }}>{t.entryPrice || "—"}</td>
+                        <td style={{ padding:"6px 10px", color:"var(--tp-text2)", fontFamily:"'JetBrains Mono', monospace", fontSize:11 }}>{t.exitPrice || "—"}</td>
                         <td style={{ padding:"6px 10px", color:"var(--tp-muted)" }}>{t.quantity || "—"}</td>
                         <td style={{ padding:"6px 10px", fontWeight:600, color: t.pnl > 0 ? "#4ade80" : t.pnl < 0 ? "#f87171" : "#5c6070", fontFamily:"'JetBrains Mono', monospace" }}>{t.pnl !== null ? fmt(t.pnl) : "—"}</td>
                         <td style={{ padding:"6px 10px", color:"#60a5fa", fontSize:10 }}>{t.account || "—"}</td>
@@ -6605,7 +6887,7 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
               {importResult.account && <div style={{ fontSize:12, color:"#4ade80" }}>Assigned to: {importResult.account}</div>}
               <div style={{ display:"flex", gap:10, justifyContent:"center", marginTop:20 }}>
                 <button onClick={reset} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid rgba(255,255,255,0.12)", background:"transparent", color:"var(--tp-muted)", cursor:"pointer", fontSize:13 }}>Done</button>
-                <button onClick={()=>{setStep(1);setCsvData(null);setImportPreview([]);setImportResult(null);}} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid rgba(74,222,128,0.2)", background:"rgba(74,222,128,0.08)", color:"#4ade80", cursor:"pointer", fontSize:13 }}>Import More</button>
+                <button onClick={()=>{setStep(1);setCsvData(null);setImportPreview([]);setImportResult(null);setFileName("");setCsvFormat("trade-based");setPairStats(null);}} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid rgba(74,222,128,0.2)", background:"rgba(74,222,128,0.08)", color:"#4ade80", cursor:"pointer", fontSize:13 }}>Import More</button>
               </div>
             </div>
           )}
