@@ -5721,6 +5721,56 @@ function PlaybookModal({ playbook, onSave, onClose }) {
 }
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
+// ─── CLAUDE SETUP GUIDE ─────────────────────────────────────────────────────
+function SetupGuide() {
+  const [open, setOpen] = useState(false);
+  const stepStyle = { display:"flex", gap:10, marginBottom:12 };
+  const numStyle = { width:20, height:20, borderRadius:10, background:"rgba(165,180,252,0.15)", color:"#a5b4fc", fontSize:10, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:1 };
+  const textStyle = { fontSize:12, color:"var(--tp-muted)", lineHeight:1.6 };
+  const linkStyle = { color:"#a5b4fc", textDecoration:"none", fontWeight:600 };
+
+  return (
+    <div>
+      <button onClick={()=>setOpen(p=>!p)} style={{ display:"flex", alignItems:"center", gap:6, background:"none", border:"none", color:"#a5b4fc", cursor:"pointer", fontSize:12, fontWeight:600, padding:0 }}>
+        {open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+        {open ? "Hide setup guide" : "Don't have an API key? Follow these steps"}
+      </button>
+
+      {open && (
+        <div style={{ marginTop:14, background:"rgba(165,180,252,0.04)", border:"1px solid rgba(165,180,252,0.1)", borderRadius:10, padding:"16px 18px" }}>
+          <div style={stepStyle}>
+            <div style={numStyle}>1</div>
+            <div style={textStyle}>
+              Go to <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer" style={linkStyle}>console.anthropic.com</a> and create a free account (or sign in if you already have one).
+            </div>
+          </div>
+          <div style={stepStyle}>
+            <div style={numStyle}>2</div>
+            <div style={textStyle}>
+              Once logged in, you'll need to add a payment method. Click <strong style={{ color:"var(--tp-text)" }}>Settings</strong> in the left sidebar, then <strong style={{ color:"var(--tp-text)" }}>Billing</strong>. Add a credit or debit card. You won't be charged upfront — you only pay for what you use (typically a few cents per analysis).
+            </div>
+          </div>
+          <div style={stepStyle}>
+            <div style={numStyle}>3</div>
+            <div style={textStyle}>
+              In the left sidebar, click <strong style={{ color:"var(--tp-text)" }}>API Keys</strong>. Then click <strong style={{ color:"var(--tp-text)" }}>Create Key</strong>. Give it any name you like (e.g. "TradePulse").
+            </div>
+          </div>
+          <div style={stepStyle}>
+            <div style={numStyle}>4</div>
+            <div style={textStyle}>
+              Copy the key that appears (it starts with <code style={{ background:"var(--tp-input)", padding:"1px 5px", borderRadius:3, fontSize:11 }}>sk-ant-</code>). You'll only see it once, so paste it into the field above right away.
+            </div>
+          </div>
+          <div style={{ marginTop:4, fontSize:11, color:"var(--tp-faintest)", lineHeight:1.6, paddingLeft:30 }}>
+            That's it! Your AI Coach will now use Claude for deeper, more nuanced trade analysis. You can monitor your usage and costs at any time on the Anthropic console.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCustomFields, accountBalances, onSaveAccountBalances, trades, onSaveTrades, prefs, onSavePrefs, theme }) {
   const [section, setSection] = useState("accounts"); // accounts | appearance | futures | custom | importexport | ai
   const [showAddModal, setShowAddModal] = useState(false);
@@ -5742,13 +5792,13 @@ function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCusto
   return (
     <div>
       {/* Section tabs */}
-      <div style={{ display:"flex", gap:8, marginBottom:24, borderBottom:"1px solid var(--tp-border)", paddingBottom:2 }}>
-        <button onClick={()=>setSection("accounts")} style={{ padding:"8px 16px", border:"none", background:section==="accounts"?"rgba(99,102,241,0.15)":"transparent", color:section==="accounts"?"#a5b4fc":theme.textFaint, cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="accounts"?"2px solid #6366f1":"none" }}>Account Balances</button>
-        <button onClick={()=>setSection("appearance")} style={{ padding:"8px 16px", border:"none", background:section==="appearance"?"rgba(99,102,241,0.15)":"transparent", color:section==="appearance"?"#a5b4fc":theme.textFaint, cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="appearance"?"2px solid #6366f1":"none" }}>Appearance</button>
-        <button onClick={()=>setSection("importexport")} style={{ padding:"8px 16px", border:"none", background:section==="importexport"?"rgba(99,102,241,0.15)":"transparent", color:section==="importexport"?"#a5b4fc":theme.textFaint, cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="importexport"?"2px solid #6366f1":"none" }}>Import / Export</button>
-        <button onClick={()=>setSection("futures")} style={{ padding:"8px 16px", border:"none", background:section==="futures"?"rgba(99,102,241,0.15)":"transparent", color:section==="futures"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="futures"?"2px solid #6366f1":"none" }}>Futures Presets</button>
-        <button onClick={()=>setSection("custom")} style={{ padding:"8px 16px", border:"none", background:section==="custom"?"rgba(99,102,241,0.15)":"transparent", color:section==="custom"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="custom"?"2px solid #6366f1":"none" }}>Custom Fields</button>
-        <button onClick={()=>setSection("ai")} style={{ padding:"8px 16px", border:"none", background:section==="ai"?"rgba(99,102,241,0.15)":"transparent", color:section==="ai"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="ai"?"2px solid #6366f1":"none" }}>AI Integration</button>
+      <div className="tp-settings-tabs" style={{ display:"flex", gap:8, marginBottom:24, borderBottom:"1px solid var(--tp-border)", paddingBottom:2 }}>
+        <button onClick={()=>setSection("accounts")} style={{ padding:"8px 16px", border:"none", background:section==="accounts"?"rgba(99,102,241,0.15)":"transparent", color:section==="accounts"?"#a5b4fc":theme.textFaint, cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="accounts"?"2px solid #6366f1":"none", whiteSpace:"nowrap", flexShrink:0 }}>Account Balances</button>
+        <button onClick={()=>setSection("appearance")} style={{ padding:"8px 16px", border:"none", background:section==="appearance"?"rgba(99,102,241,0.15)":"transparent", color:section==="appearance"?"#a5b4fc":theme.textFaint, cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="appearance"?"2px solid #6366f1":"none", whiteSpace:"nowrap", flexShrink:0 }}>Appearance</button>
+        <button onClick={()=>setSection("importexport")} style={{ padding:"8px 16px", border:"none", background:section==="importexport"?"rgba(99,102,241,0.15)":"transparent", color:section==="importexport"?"#a5b4fc":theme.textFaint, cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="importexport"?"2px solid #6366f1":"none", whiteSpace:"nowrap", flexShrink:0 }}>Import / Export</button>
+        <button onClick={()=>setSection("futures")} style={{ padding:"8px 16px", border:"none", background:section==="futures"?"rgba(99,102,241,0.15)":"transparent", color:section==="futures"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="futures"?"2px solid #6366f1":"none", whiteSpace:"nowrap", flexShrink:0 }}>Futures Presets</button>
+        <button onClick={()=>setSection("custom")} style={{ padding:"8px 16px", border:"none", background:section==="custom"?"rgba(99,102,241,0.15)":"transparent", color:section==="custom"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="custom"?"2px solid #6366f1":"none", whiteSpace:"nowrap", flexShrink:0 }}>Custom Fields</button>
+        <button onClick={()=>setSection("ai")} style={{ padding:"8px 16px", border:"none", background:section==="ai"?"rgba(99,102,241,0.15)":"transparent", color:section==="ai"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="ai"?"2px solid #6366f1":"none", whiteSpace:"nowrap", flexShrink:0 }}>AI Integration</button>
       </div>
 
       {section === "accounts" && <AccountBalancesManager accountBalances={accountBalances} onSave={onSaveAccountBalances} customFields={customFields}/>}
@@ -5830,30 +5880,31 @@ function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCusto
           {prefs.aiProvider === "claude" && (
             <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:14, padding:"20px 24px", marginBottom:16 }}>
               <div style={{ fontSize:11, fontWeight:700, color:"#a5b4fc", textTransform:"uppercase", letterSpacing:0.8, marginBottom:10 }}>Claude API Key</div>
-              <p style={{ fontSize:12, color:"var(--tp-faint)", lineHeight:1.6, margin:"0 0 14px" }}>
-                Get your API key from <strong style={{ color:"var(--tp-text)" }}>console.anthropic.com</strong> → Settings → API Keys. Your key is stored securely in your cloud account and never shared.
-              </p>
-              <div style={{ display:"flex", gap:8 }}>
+              <div style={{ display:"flex", gap:8, marginBottom:10 }}>
                 <input
                   type="password"
                   value={prefs.claudeApiKey || ""}
                   onChange={e=>onSavePrefs(p=>({...p, claudeApiKey: e.target.value}))}
-                  placeholder="sk-ant-api03-..."
+                  placeholder="Paste your API key here..."
                   style={{ flex:1, padding:"10px 14px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", fontFamily:"'JetBrains Mono', monospace" }}
                 />
               </div>
               {(prefs.claudeApiKey||"").startsWith("sk-ant-") && (
-                <div style={{ marginTop:10, fontSize:11, color:"#4ade80", display:"flex", alignItems:"center", gap:5 }}>
+                <div style={{ marginTop:6, marginBottom:10, fontSize:11, color:"#4ade80", display:"flex", alignItems:"center", gap:5 }}>
                   <Check size={12}/> API key saved. AI Coach will use Claude for analysis.
                 </div>
               )}
               {prefs.claudeApiKey && !(prefs.claudeApiKey||"").startsWith("sk-ant-") && (
-                <div style={{ marginTop:10, fontSize:11, color:"#eab308" }}>
-                  Key doesn't look right — should start with "sk-ant-"
+                <div style={{ marginTop:6, marginBottom:10, fontSize:11, color:"#eab308" }}>
+                  Key doesn't look right — it should start with "sk-ant-"
                 </div>
               )}
+
+              {/* Collapsible setup guide */}
+              <SetupGuide />
+
               <div style={{ marginTop:12, fontSize:11, color:"var(--tp-faintest)", lineHeight:1.5 }}>
-                Typical cost: ~$0.01-0.03 per analysis. 10 analyses/day ≈ $0.30/day.
+                Your key is stored securely in your cloud account and never shared. Typical cost: ~$0.01-0.03 per analysis.
               </div>
             </div>
           )}
@@ -6917,6 +6968,8 @@ function TradePulseApp({ user, onSignOut }) {
 
         /* Review */
         .tp-review-section-tabs { flex-wrap: wrap !important; }
+        .tp-settings-tabs { overflow-x: auto !important; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+        .tp-settings-tabs::-webkit-scrollbar { display: none; }
         .tp-review-risk-grid { grid-template-columns: repeat(2, 1fr) !important; }
         .tp-replay-controls { flex-wrap: wrap !important; justify-content: center !important; }
         .tp-replay-detail-grid { grid-template-columns: repeat(2, 1fr) !important; }
