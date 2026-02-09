@@ -4350,8 +4350,8 @@ function DividendModal({ onSave, onClose, editDiv, holdingTickers, accountBalanc
 }
 
 // ─── REVIEW TAB ──────────────────────────────────────────────────────────────
-function ReviewTab({ trades, accountBalances }) {
-  const [section, setSection] = useState("risk"); // risk | insights | replay
+function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }) {
+  const [section, setSection] = useState("risk"); // risk | insights | replay | coach
   const [replayIdx, setReplayIdx] = useState(0);
   const [replayFilter, setReplayFilter] = useState("all"); // all | wins | losses
   const [viewingSrc, setViewingSrc] = useState(null);
@@ -4515,7 +4515,7 @@ function ReviewTab({ trades, accountBalances }) {
     <div>
       {/* Section tabs */}
       <div style={{ display:"flex", gap:8, marginBottom:24, borderBottom:"1px solid var(--tp-border)", paddingBottom:2 }}>
-        {[{id:"risk",label:"Risk Management",icon:Shield},{id:"insights",label:"Insights",icon:Lightbulb},{id:"replay",label:"Trade Replay",icon:Eye}].map(s => (
+        {[{id:"risk",label:"Risk Management",icon:Shield},{id:"insights",label:"Insights",icon:Lightbulb},{id:"replay",label:"Trade Replay",icon:Eye},{id:"coach",label:"AI Coach",icon:Zap}].map(s => (
           <button key={s.id} onClick={()=>setSection(s.id)} style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 16px", border:"none", background:section===s.id?"rgba(99,102,241,0.15)":"transparent", color:section===s.id?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section===s.id?"2px solid #6366f1":"none" }}><s.icon size={14}/> {s.label}</button>
         ))}
       </div>
@@ -4709,7 +4709,295 @@ function ReviewTab({ trades, accountBalances }) {
         </div>
       )}
 
+      {/* ═══════ AI COACH ═══════ */}
+      {section === "coach" && <AICoach trades={trades} accountBalances={accountBalances} journal={journal} goals={goals} playbooks={playbooks} prefs={prefs}/>}
+
       {viewingSrc && <ScreenshotLightbox src={viewingSrc} onClose={()=>setViewingSrc(null)}/>}
+    </div>
+  );
+}
+
+// ─── AI TRADE COACH ─────────────────────────────────────────────────────────
+const COACH_DAILY_LIMIT = 10;
+const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_FREE_KEY = "AIzaSyDiLqNoR_IhamolV6qqS8S7rHDzKi1J3Ns";
+
+function AICoach({ trades, accountBalances, journal, goals, playbooks, prefs }) {
+  const [mode, setMode] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [usageToday, setUsageToday] = useState(0);
+
+  const aiProvider = prefs?.aiProvider || "gemini"; // gemini | claude
+  const claudeKey = prefs?.claudeApiKey || "";
+  const hasClaudeKey = claudeKey.startsWith("sk-ant-");
+
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("tp_coach_usage") || "{}");
+      const today = new Date().toISOString().split("T")[0];
+      setUsageToday(stored.date === today ? (stored.count || 0) : 0);
+    } catch(e) { setUsageToday(0); }
+  }, []);
+
+  const incrementUsage = () => {
+    const today = new Date().toISOString().split("T")[0];
+    const next = usageToday + 1;
+    setUsageToday(next);
+    localStorage.setItem("tp_coach_usage", JSON.stringify({ date: today, count: next }));
+  };
+
+  // ── Build trade statistics ──
+  const buildStats = (scope) => {
+    const closed = (trades || []).filter(t => t.pnl !== null);
+    if (closed.length === 0) return null;
+    const sorted = [...closed].sort((a,b) => new Date(b.date) - new Date(a.date));
+    const scopeTrades = scope === "week"
+      ? sorted.filter(t => { const diff = (new Date() - new Date(t.date)) / (1000*60*60*24); return diff <= 7; })
+      : scope === "recent" ? sorted.slice(0, 10) : sorted;
+    if (scopeTrades.length === 0) return null;
+
+    const wins = scopeTrades.filter(t => t.pnl > 0);
+    const losses = scopeTrades.filter(t => t.pnl < 0);
+    const totalPnL = scopeTrades.reduce((s,t) => s + t.pnl, 0);
+    const avgWin = wins.length > 0 ? wins.reduce((s,t) => s + t.pnl, 0) / wins.length : 0;
+    const avgLoss = losses.length > 0 ? losses.reduce((s,t) => s + t.pnl, 0) / losses.length : 0;
+    const totalCap = Object.values(accountBalances || {}).reduce((s,v) => s + (parseFloat(v) || 0), 0);
+
+    const bySetup = {};
+    scopeTrades.forEach(t => {
+      const key = t.playbook || "(no setup tagged)";
+      if (!bySetup[key]) bySetup[key] = { count:0, wins:0, pnl:0, tickers:new Set() };
+      bySetup[key].count++; if (t.pnl > 0) bySetup[key].wins++; bySetup[key].pnl += t.pnl; bySetup[key].tickers.add(t.ticker);
+    });
+    const byDay = {};
+    scopeTrades.forEach(t => {
+      const day = new Date(t.date).toLocaleDateString("en-US",{weekday:"short"});
+      if (!byDay[day]) byDay[day] = { count:0, wins:0, pnl:0 };
+      byDay[day].count++; if (t.pnl > 0) byDay[day].wins++; byDay[day].pnl += t.pnl;
+    });
+    const byHour = {};
+    scopeTrades.forEach(t => {
+      if (t.entryTime) {
+        const hr = parseInt(t.entryTime.split(":")[0]);
+        const bucket = hr < 10 ? "Pre-10AM" : hr < 12 ? "10AM-12PM" : hr < 14 ? "12PM-2PM" : "After 2PM";
+        if (!byHour[bucket]) byHour[bucket] = { count:0, wins:0, pnl:0 };
+        byHour[bucket].count++; if (t.pnl > 0) byHour[bucket].wins++; byHour[bucket].pnl += t.pnl;
+      }
+    });
+    const byEmotion = {};
+    scopeTrades.forEach(t => { (t.emotions||[]).forEach(e => { if (!byEmotion[e]) byEmotion[e] = { count:0, wins:0, pnl:0 }; byEmotion[e].count++; if (t.pnl > 0) byEmotion[e].wins++; byEmotion[e].pnl += t.pnl; }); });
+
+    let maxConsecLosses = 0, curr = 0;
+    const sameDayMultiLoss = {};
+    sorted.forEach(t => {
+      if (t.pnl < 0) { curr++; maxConsecLosses = Math.max(maxConsecLosses, curr); } else curr = 0;
+      const key = `${t.date}-${t.ticker}`;
+      if (t.pnl < 0) sameDayMultiLoss[key] = (sameDayMultiLoss[key]||0) + 1;
+    });
+    const revengeTradeCandidates = Object.entries(sameDayMultiLoss).filter(([,v]) => v >= 2).length;
+
+    const byGrade = {};
+    scopeTrades.forEach(t => { if (t.grade) { if (!byGrade[t.grade]) byGrade[t.grade] = { count:0, pnl:0 }; byGrade[t.grade].count++; byGrade[t.grade].pnl += t.pnl; }});
+
+    const recentDetail = sorted.slice(0,10).map(t => ({
+      date:t.date, ticker:t.ticker, direction:t.direction, pnl:t.pnl, setup:t.playbook||"none", grade:t.grade||"—", assetType:t.assetType,
+      entryTime:t.entryTime||"", exitTime:t.exitTime||"", stopLoss:t.stopLoss, takeProfit:t.takeProfit, entryPrice:t.entryPrice, exitPrice:t.exitPrice,
+      emotions:(t.emotions||[]).join(", ")||"none logged"
+    }));
+
+    const tradesByDate = {};
+    scopeTrades.forEach(t => { tradesByDate[t.date] = (tradesByDate[t.date]||0) + 1; });
+    const tradeDays = Object.keys(tradesByDate).length;
+
+    return {
+      scope: scope === "week" ? "Last 7 days" : scope === "recent" ? "Last 10 trades" : "All time",
+      totalTrades: scopeTrades.length, winRate: ((wins.length/scopeTrades.length)*100).toFixed(1),
+      wins: wins.length, losses: losses.length, totalPnL: totalPnL.toFixed(2),
+      avgWin: avgWin.toFixed(2), avgLoss: avgLoss.toFixed(2),
+      profitFactor: losses.length > 0 && avgLoss !== 0 ? (Math.abs(wins.reduce((s,t)=>s+t.pnl,0)) / Math.abs(losses.reduce((s,t)=>s+t.pnl,0))).toFixed(2) : "∞",
+      totalCapital: totalCap > 0 ? totalCap.toFixed(0) : "not set",
+      returnPct: totalCap > 0 ? ((totalPnL/totalCap)*100).toFixed(2)+"%" : "N/A",
+      avgTradesPerDay: tradeDays > 0 ? (scopeTrades.length/tradeDays).toFixed(1) : "0",
+      maxTradesOneDay: Math.max(...Object.values(tradesByDate), 0),
+      bySetup: Object.entries(bySetup).map(([name,d]) => `${name}: ${d.count} trades, ${d.wins}W/${d.count-d.wins}L, $${d.pnl.toFixed(0)}, tickers: ${[...d.tickers].join(",")}`).join("\n"),
+      byDay: Object.entries(byDay).map(([day,d]) => `${day}: ${d.count} trades, ${((d.wins/d.count)*100).toFixed(0)}% WR, $${d.pnl.toFixed(0)}`).join("; "),
+      byHour: Object.entries(byHour).map(([h,d]) => `${h}: ${d.count} trades, ${((d.wins/d.count)*100).toFixed(0)}% WR, $${d.pnl.toFixed(0)}`).join("; "),
+      byEmotion: Object.entries(byEmotion).length > 0 ? Object.entries(byEmotion).map(([e,d]) => `${e}: ${d.count} trades, ${((d.wins/d.count)*100).toFixed(0)}% WR, $${d.pnl.toFixed(0)}`).join("; ") : "No emotions logged",
+      maxConsecLosses, revengeTradeCandidates,
+      byGrade: Object.entries(byGrade).map(([g,d]) => `${g}: ${d.count} trades, $${d.pnl.toFixed(0)}`).join("; "),
+      recentDetail: JSON.stringify(recentDetail, null, 0)
+    };
+  };
+
+  const getJournalContext = () => {
+    if (!journal || journal.length === 0) return "No journal entries.";
+    const recent = [...journal].sort((a,b) => b.date?.localeCompare(a.date)).slice(0, 5);
+    return recent.map(j => `${j.date}: mood=${j.mood||"?"}, market=${(j.marketConditions||[]).join(",")}, went well="${(j.wentWell||"").slice(0,100)}", improve="${(j.toImprove||"").slice(0,100)}", lessons="${(j.lessons||"").slice(0,100)}"`).join("\n");
+  };
+
+  const getGoalsContext = () => {
+    if (!goals || !goals.dailyTargetPct) return "No goals set.";
+    return `Daily target: ${goals.dailyTargetPct}%, Daily stop: ${goals.dailyStopPct||"not set"}%, Starting balance: $${goals.startingBalance||"not set"}`;
+  };
+
+  const buildPrompt = (analysisMode) => {
+    const stats = buildStats(analysisMode === "quick" ? "recent" : analysisMode === "weekly" ? "week" : "all");
+    if (!stats) return null;
+    const base = `You are an expert trading coach analyzing a trader's performance data. Be direct, specific, and actionable. Reference actual numbers from the data. Use a supportive but honest tone — point out strengths AND weaknesses. Keep your response concise (3-5 paragraphs max). Do NOT use bullet point lists — write in natural prose paragraphs.`;
+
+    if (analysisMode === "quick") {
+      return { system: base, user: `QUICK DEBRIEF — Analyze my last 10 trades and give me immediate feedback.\n\nSTATS: ${stats.totalTrades} trades | ${stats.winRate}% WR | ${stats.wins}W/${stats.losses}L | P&L: $${stats.totalPnL} | Avg Win: $${stats.avgWin} | Avg Loss: $${stats.avgLoss} | PF: ${stats.profitFactor}\n\nTRADE DETAILS:\n${stats.recentDetail}\n\nSETUP BREAKDOWN:\n${stats.bySetup}\n\nTell me: What am I doing well? What's my biggest leak? What should I do differently on my next trade? If you see emotional patterns or poor risk management, call it out.` };
+    }
+    if (analysisMode === "weekly") {
+      return { system: base, user: `WEEKLY REVIEW — Analyze my past week.\n\nSTATS (7 days): ${stats.totalTrades} trades | ${stats.winRate}% WR | P&L: $${stats.totalPnL} | Return: ${stats.returnPct} | Avg Win: $${stats.avgWin} | Avg Loss: $${stats.avgLoss} | PF: ${stats.profitFactor}\nAvg trades/day: ${stats.avgTradesPerDay} | Max trades one day: ${stats.maxTradesOneDay}\n\nBY DAY: ${stats.byDay}\nBY TIME: ${stats.byHour}\nSETUPS:\n${stats.bySetup}\nEMOTIONS: ${stats.byEmotion}\nGRADES: ${stats.byGrade}\n\nJOURNAL:\n${getJournalContext()}\n\nGOALS: ${getGoalsContext()}\n\nHow did I perform vs goals? Day/time patterns? Emotional patterns? What should I focus on next week?` };
+    }
+    if (analysisMode === "setup") {
+      return { system: base, user: `SETUP ANALYSIS — Analyze performance by strategy.\n\nOVERALL: ${stats.totalTrades} trades | ${stats.winRate}% WR | P&L: $${stats.totalPnL} | Capital: $${stats.totalCapital}\n\nSETUPS:\n${stats.bySetup}\n\nBY DAY: ${stats.byDay}\nBY TIME: ${stats.byHour}\n\nWhich setups are my edge? Which should I stop trading? Any day/time patterns per setup? If trades are untagged, remind me to tag setups.` };
+    }
+    if (analysisMode === "patterns") {
+      return { system: base, user: `BEHAVIORAL PATTERN ANALYSIS — Look for hidden patterns.\n\nSTATS: ${stats.totalTrades} total | ${stats.winRate}% WR | P&L: $${stats.totalPnL} | PF: ${stats.profitFactor}\nAvg trades/day: ${stats.avgTradesPerDay} | Max one day: ${stats.maxTradesOneDay}\nMax consec losses: ${stats.maxConsecLosses}\nPotential revenge trades: ${stats.revengeTradeCandidates}\n\nBY DAY: ${stats.byDay}\nBY TIME: ${stats.byHour}\nBY EMOTION: ${stats.byEmotion}\nBY GRADE: ${stats.byGrade}\nSETUPS:\n${stats.bySetup}\n\nRECENT:\n${stats.recentDetail}\n\nLook for: revenge trading, overtrading, emotional decisions, position sizing issues, time-of-day tendencies, grade vs P&L correlation. Give me 2-3 specific rules to adopt.` };
+    }
+    return null;
+  };
+
+  // ── Call Gemini API ──
+  const callGemini = async (prompt) => {
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: prompt.system }] },
+        contents: [{ parts: [{ text: prompt.user }] }],
+        generationConfig: { maxOutputTokens: 1024, temperature: 0.7 }
+      })
+    });
+    if (!resp.ok) { const err = await resp.json().catch(()=>({})); throw new Error(err.error?.message || `Gemini error: ${resp.status}`); }
+    const data = await resp.json();
+    return data.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "No response received.";
+  };
+
+  // ── Call Claude API (BYOK) ──
+  const callClaude = async (prompt) => {
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": claudeKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1024, system: prompt.system, messages: [{ role: "user", content: prompt.user }] })
+    });
+    if (!resp.ok) { const err = await resp.json().catch(()=>({})); throw new Error(err.error?.message || `Claude error: ${resp.status}`); }
+    const data = await resp.json();
+    return data.content?.map(c => c.type === "text" ? c.text : "").join("") || "No response received.";
+  };
+
+  const runAnalysis = async (analysisMode) => {
+    if (usageToday >= COACH_DAILY_LIMIT) { setError(`Daily limit reached (${COACH_DAILY_LIMIT}/day). Try again tomorrow.`); return; }
+    const prompt = buildPrompt(analysisMode);
+    if (!prompt) { setError("Not enough trade data. Log more trades first."); return; }
+
+    setMode(analysisMode); setLoading(true); setResult(null); setError(null);
+
+    try {
+      const useProvider = (aiProvider === "claude" && hasClaudeKey) ? "claude" : "gemini";
+      const text = useProvider === "claude" ? await callClaude(prompt) : await callGemini(prompt);
+      setResult({ text, provider: useProvider });
+      incrementUsage();
+    } catch (err) {
+      setError(err.message || "Analysis failed. Check your connection.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const closedCount = (trades || []).filter(t => t.pnl !== null).length;
+  const modeLabels = {
+    quick: { title:"Quick Debrief", desc:"Your last 10 trades", icon:"⚡", color:"#a5b4fc" },
+    weekly: { title:"Weekly Review", desc:"Past 7 days + journal", icon:"📅", color:"#4ade80" },
+    setup: { title:"Setup Analysis", desc:"Performance by strategy", icon:"📊", color:"#60a5fa" },
+    patterns: { title:"Pattern Detection", desc:"Hidden behavioral patterns", icon:"🔍", color:"#f59e0b" }
+  };
+  const activeProvider = (aiProvider === "claude" && hasClaudeKey) ? "claude" : "gemini";
+
+  return (
+    <div>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+        <Zap size={20} color="#a5b4fc"/>
+        <span style={{ fontSize:18, fontWeight:700, color:"var(--tp-text)" }}>AI Trade Coach</span>
+        <span style={{ fontSize:10, color:"var(--tp-faintest)", background:"var(--tp-card)", padding:"3px 8px", borderRadius:4, fontWeight:600 }}>{usageToday}/{COACH_DAILY_LIMIT} today</span>
+        <span style={{ fontSize:9, padding:"3px 8px", borderRadius:4, fontWeight:700, background: activeProvider === "claude" ? "rgba(165,180,252,0.12)" : "rgba(74,222,128,0.12)", color: activeProvider === "claude" ? "#a5b4fc" : "#4ade80", textTransform:"uppercase", letterSpacing:0.5 }}>
+          {activeProvider === "claude" ? "Claude" : "Gemini Flash"}
+        </span>
+      </div>
+      <p style={{ fontSize:13, color:"var(--tp-faint)", marginBottom:20, lineHeight:1.6 }}>
+        {activeProvider === "gemini"
+          ? "Free AI coaching powered by Gemini Flash. For deeper behavioral analysis, connect your Claude API key in Settings → AI Integration."
+          : "Advanced AI coaching powered by Claude. Using your API key for premium analysis."}
+      </p>
+
+      {!loading && !result && (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:12, marginBottom:20 }}>
+          {Object.entries(modeLabels).map(([key, m]) => (
+            <button key={key} onClick={()=>runAnalysis(key)} disabled={closedCount < 3 || usageToday >= COACH_DAILY_LIMIT}
+              style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:12, padding:"20px 18px", cursor: closedCount < 3 ? "not-allowed" : "pointer", textAlign:"left", transition:"border-color 0.2s, transform 0.15s", opacity: closedCount < 3 ? 0.5 : 1 }}
+              onMouseEnter={e=>{if(closedCount>=3){e.currentTarget.style.borderColor="rgba(99,102,241,0.4)";e.currentTarget.style.transform="translateY(-2px)";}}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(255,255,255,0.07)";e.currentTarget.style.transform="translateY(0)";}}>
+              <div style={{ fontSize:28, marginBottom:8 }}>{m.icon}</div>
+              <div style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)", marginBottom:4 }}>{m.title}</div>
+              <div style={{ fontSize:11, color:"var(--tp-faint)", lineHeight:1.4 }}>{m.desc}</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {closedCount < 3 && !loading && !result && (
+        <div style={{ textAlign:"center", padding:"20px", background:"rgba(234,179,8,0.06)", border:"1px solid rgba(234,179,8,0.15)", borderRadius:10, color:"#eab308", fontSize:12 }}>
+          Need at least 3 closed trades to run analysis. You have {closedCount} so far.
+        </div>
+      )}
+
+      {loading && (
+        <div style={{ textAlign:"center", padding:"60px 20px" }}>
+          <div style={{ width:40, height:40, border:"3px solid rgba(99,102,241,0.2)", borderTop:"3px solid #6366f1", borderRadius:"50%", margin:"0 auto 16px", animation:"spin 1s linear infinite" }}/>
+          <div style={{ fontSize:14, fontWeight:600, color:"var(--tp-text)", marginBottom:4 }}>Analyzing your trades...</div>
+          <div style={{ fontSize:11, color:"var(--tp-faint)" }}>{modeLabels[mode]?.title} via {activeProvider === "claude" ? "Claude" : "Gemini Flash"}</div>
+        </div>
+      )}
+
+      {error && (
+        <div style={{ padding:"16px 20px", background:"rgba(248,113,113,0.08)", border:"1px solid rgba(248,113,113,0.2)", borderRadius:10, marginBottom:16 }}>
+          <div style={{ fontSize:13, color:"#f87171", fontWeight:600, marginBottom:4 }}>Analysis Error</div>
+          <div style={{ fontSize:12, color:"#fca5a5" }}>{error}</div>
+          <button onClick={()=>{setError(null);setMode(null);}} style={{ marginTop:10, padding:"6px 14px", borderRadius:6, border:"1px solid rgba(248,113,113,0.3)", background:"transparent", color:"#f87171", cursor:"pointer", fontSize:11, fontWeight:600 }}>Try Again</button>
+        </div>
+      )}
+
+      {result && (
+        <div>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:20 }}>{modeLabels[mode]?.icon}</span>
+              <span style={{ fontSize:15, fontWeight:700, color:"var(--tp-text)" }}>{modeLabels[mode]?.title}</span>
+              <span style={{ fontSize:9, padding:"2px 6px", borderRadius:3, background: result.provider === "claude" ? "rgba(165,180,252,0.12)" : "rgba(74,222,128,0.12)", color: result.provider === "claude" ? "#a5b4fc" : "#4ade80", fontWeight:600, textTransform:"uppercase" }}>{result.provider}</span>
+            </div>
+            <button onClick={()=>{setResult(null);setMode(null);}} style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 14px", borderRadius:6, border:"1px solid var(--tp-border-l)", background:"var(--tp-card)", color:"var(--tp-muted)", cursor:"pointer", fontSize:11, fontWeight:600 }}>
+              <ChevronLeft size={12}/> Back
+            </button>
+          </div>
+          <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:14, padding:"22px 24px", lineHeight:1.8, fontSize:13, color:"var(--tp-text2)" }}>
+            {result.text.split("\n\n").map((para, i) => (
+              <p key={i} style={{ margin: i === 0 ? 0 : "14px 0 0 0" }}>{para}</p>
+            ))}
+          </div>
+          <div style={{ marginTop:16, display:"flex", gap:8, flexWrap:"wrap" }}>
+            {Object.entries(modeLabels).filter(([k]) => k !== mode).map(([key, m]) => (
+              <button key={key} onClick={()=>runAnalysis(key)} disabled={usageToday >= COACH_DAILY_LIMIT}
+                style={{ display:"flex", alignItems:"center", gap:5, padding:"7px 14px", borderRadius:7, border:"1px solid var(--tp-border-l)", background:"var(--tp-card)", color:"var(--tp-muted)", cursor:"pointer", fontSize:11, fontWeight:600 }}>
+                {m.icon} {m.title}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -5434,7 +5722,7 @@ function PlaybookModal({ playbook, onSave, onClose }) {
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
 function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCustomFields, accountBalances, onSaveAccountBalances, trades, onSaveTrades, prefs, onSavePrefs, theme }) {
-  const [section, setSection] = useState("accounts"); // accounts | appearance | futures | custom | importexport
+  const [section, setSection] = useState("accounts"); // accounts | appearance | futures | custom | importexport | ai
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingPreset, setEditingPreset] = useState(null);
 
@@ -5460,6 +5748,7 @@ function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCusto
         <button onClick={()=>setSection("importexport")} style={{ padding:"8px 16px", border:"none", background:section==="importexport"?"rgba(99,102,241,0.15)":"transparent", color:section==="importexport"?"#a5b4fc":theme.textFaint, cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="importexport"?"2px solid #6366f1":"none" }}>Import / Export</button>
         <button onClick={()=>setSection("futures")} style={{ padding:"8px 16px", border:"none", background:section==="futures"?"rgba(99,102,241,0.15)":"transparent", color:section==="futures"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="futures"?"2px solid #6366f1":"none" }}>Futures Presets</button>
         <button onClick={()=>setSection("custom")} style={{ padding:"8px 16px", border:"none", background:section==="custom"?"rgba(99,102,241,0.15)":"transparent", color:section==="custom"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="custom"?"2px solid #6366f1":"none" }}>Custom Fields</button>
+        <button onClick={()=>setSection("ai")} style={{ padding:"8px 16px", border:"none", background:section==="ai"?"rgba(99,102,241,0.15)":"transparent", color:section==="ai"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="ai"?"2px solid #6366f1":"none" }}>AI Integration</button>
       </div>
 
       {section === "accounts" && <AccountBalancesManager accountBalances={accountBalances} onSave={onSaveAccountBalances} customFields={customFields}/>}
@@ -5502,6 +5791,82 @@ function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCusto
       {section === "appearance" && <AppearanceManager prefs={prefs} onSave={onSavePrefs} theme={theme}/>}
 
       {section === "custom" && <CustomFieldsManager customFields={customFields} onSave={onSaveCustomFields}/>}
+
+      {section === "ai" && (
+        <div>
+          <div style={{ fontSize:18, fontWeight:600, color:"var(--tp-text)", marginBottom:4 }}>AI Integration</div>
+          <div style={{ fontSize:13, color:"var(--tp-faint)", marginBottom:20 }}>Configure your AI Trade Coach provider</div>
+
+          {/* Current provider */}
+          <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:14, padding:"20px 24px", marginBottom:16 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.8, marginBottom:14 }}>AI Provider</div>
+
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:16 }}>
+              {/* Gemini option */}
+              <button onClick={()=>onSavePrefs(p=>({...p, aiProvider:"gemini"}))} style={{ padding:"16px", borderRadius:12, border:`2px solid ${(!prefs.aiProvider || prefs.aiProvider==="gemini") ? "#4ade80" : "var(--tp-border-l)"}`, background:(!prefs.aiProvider || prefs.aiProvider==="gemini")?"rgba(74,222,128,0.06)":"var(--tp-card)", cursor:"pointer", textAlign:"left" }}>
+                <div style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)", marginBottom:4 }}>Gemini Flash</div>
+                <div style={{ fontSize:11, color:"#4ade80", fontWeight:600, marginBottom:6 }}>Free</div>
+                <div style={{ fontSize:11, color:"var(--tp-faint)", lineHeight:1.5 }}>Good analysis of trade stats, setup performance, and basic pattern detection. No setup required.</div>
+              </button>
+
+              {/* Claude option */}
+              <button onClick={()=>onSavePrefs(p=>({...p, aiProvider:"claude"}))} style={{ padding:"16px", borderRadius:12, border:`2px solid ${prefs.aiProvider==="claude" ? "#a5b4fc" : "var(--tp-border-l)"}`, background:prefs.aiProvider==="claude"?"rgba(165,180,252,0.06)":"var(--tp-card)", cursor:"pointer", textAlign:"left" }}>
+                <div style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)", marginBottom:4 }}>Claude by Anthropic</div>
+                <div style={{ fontSize:11, color:"#a5b4fc", fontWeight:600, marginBottom:6 }}>Bring Your Own Key</div>
+                <div style={{ fontSize:11, color:"var(--tp-faint)", lineHeight:1.5 }}>Deeper behavioral analysis, nuanced journal insights, and advanced pattern detection. Requires API key.</div>
+              </button>
+            </div>
+
+            {/* Status */}
+            <div style={{ fontSize:12, color:"var(--tp-muted)", display:"flex", alignItems:"center", gap:6 }}>
+              <div style={{ width:8, height:8, borderRadius:4, background: (prefs.aiProvider === "claude" && !(prefs.claudeApiKey||"").startsWith("sk-ant-")) ? "#eab308" : "#4ade80" }}/>
+              {(!prefs.aiProvider || prefs.aiProvider === "gemini") && "Using Gemini Flash (free) — no setup needed"}
+              {prefs.aiProvider === "claude" && (prefs.claudeApiKey||"").startsWith("sk-ant-") && "Using Claude with your API key"}
+              {prefs.aiProvider === "claude" && !(prefs.claudeApiKey||"").startsWith("sk-ant-") && "Claude selected but no API key entered — will fall back to Gemini"}
+            </div>
+          </div>
+
+          {/* Claude API Key */}
+          {prefs.aiProvider === "claude" && (
+            <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:14, padding:"20px 24px", marginBottom:16 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"#a5b4fc", textTransform:"uppercase", letterSpacing:0.8, marginBottom:10 }}>Claude API Key</div>
+              <p style={{ fontSize:12, color:"var(--tp-faint)", lineHeight:1.6, margin:"0 0 14px" }}>
+                Get your API key from <strong style={{ color:"var(--tp-text)" }}>console.anthropic.com</strong> → Settings → API Keys. Your key is stored securely in your cloud account and never shared.
+              </p>
+              <div style={{ display:"flex", gap:8 }}>
+                <input
+                  type="password"
+                  value={prefs.claudeApiKey || ""}
+                  onChange={e=>onSavePrefs(p=>({...p, claudeApiKey: e.target.value}))}
+                  placeholder="sk-ant-api03-..."
+                  style={{ flex:1, padding:"10px 14px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", fontFamily:"'JetBrains Mono', monospace" }}
+                />
+              </div>
+              {(prefs.claudeApiKey||"").startsWith("sk-ant-") && (
+                <div style={{ marginTop:10, fontSize:11, color:"#4ade80", display:"flex", alignItems:"center", gap:5 }}>
+                  <Check size={12}/> API key saved. AI Coach will use Claude for analysis.
+                </div>
+              )}
+              {prefs.claudeApiKey && !(prefs.claudeApiKey||"").startsWith("sk-ant-") && (
+                <div style={{ marginTop:10, fontSize:11, color:"#eab308" }}>
+                  Key doesn't look right — should start with "sk-ant-"
+                </div>
+              )}
+              <div style={{ marginTop:12, fontSize:11, color:"var(--tp-faintest)", lineHeight:1.5 }}>
+                Typical cost: ~$0.01-0.03 per analysis. 10 analyses/day ≈ $0.30/day.
+              </div>
+            </div>
+          )}
+
+          {/* Info */}
+          <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:14, padding:"20px 24px" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.8, marginBottom:10 }}>How It Works</div>
+            <div style={{ fontSize:12, color:"var(--tp-muted)", lineHeight:1.7 }}>
+              The AI Coach analyzes your trade statistics, journal entries, and behavioral patterns to give you personalized coaching. All data is computed locally in your browser first — only summary statistics are sent to the AI, never raw account data or screenshots. You can use it up to 10 times per day from the Review tab → AI Coach.
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -6736,7 +7101,7 @@ function TradePulseApp({ user, onSignOut }) {
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
         {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme}/>}
         {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades}/>}
-        {tab==="review" && <ReviewTab trades={trades} accountBalances={accountBalances} theme={theme}/>}
+        {tab==="review" && <ReviewTab trades={trades} accountBalances={accountBalances} theme={theme} prefs={prefs} journal={journal} goals={goals} playbooks={playbooks}/>}
         {tab==="playbook" && <PlaybookTab playbooks={playbooks} onSave={setPlaybooks} trades={trades} theme={theme}/>}
         {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme}/>}
         {tab==="watchlist" && <Watchlist watchlists={watchlists} onSave={setWatchlists} onPromoteTrade={promoteTrade} theme={theme}/>}
