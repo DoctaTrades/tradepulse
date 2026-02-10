@@ -3685,29 +3685,39 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
 
   // Fetch price from multiple sources
   const fetchPrice = async (ticker) => {
-    // Source 1: Try Yahoo Finance via public query endpoint
+    // Source 1: Finnhub free API (CORS-friendly, no key needed for basic quote)
     try {
-      const resp = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d`);
+      const resp = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}&token=demo`);
       if (resp.ok) {
         const data = await resp.json();
-        const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+        const price = data?.c; // current price
         if (price && price > 0) return price;
       }
     } catch {}
 
-    // Source 2: Try Yahoo Finance v6 quote
+    // Source 2: Alpha Vantage demo endpoint
     try {
-      const resp = await fetch(`https://query2.finance.yahoo.com/v6/finance/quote?symbols=${encodeURIComponent(ticker)}`);
+      const resp = await fetch(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(ticker)}&apikey=demo`);
       if (resp.ok) {
         const data = await resp.json();
-        const price = data?.quoteResponse?.result?.[0]?.regularMarketPrice;
+        const price = parseFloat(data?.["Global Quote"]?.["05. price"]);
         if (price && price > 0) return price;
       }
     } catch {}
 
-    // Source 3: Gemini (without search grounding — uses training knowledge, works for major tickers)
+    // Source 3: Twelve Data free tier
     try {
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
+      const resp = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(ticker)}&apikey=demo`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const price = parseFloat(data?.price);
+        if (price && price > 0) return price;
+      }
+    } catch {}
+
+    // Source 4: Gemini AI as last resort
+    try {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3737,10 +3747,10 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
       if (price) {
         updatePrices(prev => ({ ...prev, [ticker]: price }));
       } else {
-        setLookupError(`Could not find price for ${ticker}`);
+        setLookupError(`Could not find price for ${ticker} — try entering it manually`);
       }
     } catch (err) {
-      setLookupError(`Lookup failed for ${ticker}`);
+      setLookupError(`Lookup failed for ${ticker} — try entering it manually`);
     }
     setLookupLoading(null);
   };
@@ -3749,19 +3759,23 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
     setLookupLoading("all");
     setLookupError("");
     let successCount = 0;
+    let lastFailed = "";
     for (const ticker of allTickers) {
       try {
         const price = await fetchPrice(ticker);
         if (price) {
           updatePrices(prev => ({ ...prev, [ticker]: price }));
           successCount++;
+        } else {
+          lastFailed = ticker;
         }
-      } catch {}
-      // Small delay to be polite to APIs
-      await new Promise(r => setTimeout(r, 500));
+      } catch { lastFailed = ticker; }
+      await new Promise(r => setTimeout(r, 1200));
     }
     if (successCount === 0 && allTickers.length > 0) {
-      setLookupError("Could not fetch prices — try entering them manually");
+      setLookupError("Could not fetch any prices — the free API may be rate limited. Try again in a minute or enter prices manually.");
+    } else if (successCount < allTickers.length) {
+      setLookupError(`Fetched ${successCount}/${allTickers.length} prices. Some tickers (like ${lastFailed}) may need manual entry.`);
     }
     setLookupLoading(null);
   };
@@ -5031,7 +5045,7 @@ function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }
 
 // ─── AI TRADE COACH ─────────────────────────────────────────────────────────
 const COACH_DAILY_LIMIT = 10;
-const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_MODEL = "gemini-1.5-flash";
 const GEMINI_FREE_KEY = "AIzaSyB4AaSl43an7_Gz_Iu8JSec1xF_P4mSrsc";
 
 function AICoach({ trades, accountBalances, journal, goals, playbooks, prefs }) {
@@ -5176,7 +5190,7 @@ function AICoach({ trades, accountBalances, journal, goals, playbooks, prefs }) 
 
   // ── Call Gemini API ──
   const callGemini = async (prompt) => {
-    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
