@@ -3685,39 +3685,29 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
 
   // Fetch price from multiple sources
   const fetchPrice = async (ticker) => {
-    // Source 1: Finnhub free API (CORS-friendly, no key needed for basic quote)
+    // Source 1: Financial Modeling Prep (free, CORS-friendly, no key needed for quote)
     try {
-      const resp = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}&token=demo`);
+      const resp = await fetch(`https://financialmodelingprep.com/api/v3/quote-short/${encodeURIComponent(ticker)}?apikey=demo`);
       if (resp.ok) {
         const data = await resp.json();
-        const price = data?.c; // current price
+        const price = data?.[0]?.price;
         if (price && price > 0) return price;
       }
     } catch {}
 
-    // Source 2: Alpha Vantage demo endpoint
+    // Source 2: Stockdata.org free tier (no key needed for basic)
     try {
-      const resp = await fetch(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(ticker)}&apikey=demo`);
+      const resp = await fetch(`https://api.stockdata.org/v1/data/quote?symbols=${encodeURIComponent(ticker)}&api_token=demo`);
       if (resp.ok) {
         const data = await resp.json();
-        const price = parseFloat(data?.["Global Quote"]?.["05. price"]);
+        const price = data?.data?.[0]?.price;
         if (price && price > 0) return price;
       }
     } catch {}
 
-    // Source 3: Twelve Data free tier
+    // Source 3: Gemini AI as last resort (uses training knowledge)
     try {
-      const resp = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(ticker)}&apikey=demo`);
-      if (resp.ok) {
-        const data = await resp.json();
-        const price = parseFloat(data?.price);
-        if (price && price > 0) return price;
-      }
-    } catch {}
-
-    // Source 4: Gemini AI as last resort
-    try {
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -5045,7 +5035,7 @@ function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }
 
 // ─── AI TRADE COACH ─────────────────────────────────────────────────────────
 const COACH_DAILY_LIMIT = 10;
-const GEMINI_MODEL = "gemini-1.5-flash";
+const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_FREE_KEY = "AIzaSyB4AaSl43an7_Gz_Iu8JSec1xF_P4mSrsc";
 
 function AICoach({ trades, accountBalances, journal, goals, playbooks, prefs }) {
@@ -5190,7 +5180,7 @@ function AICoach({ trades, accountBalances, journal, goals, playbooks, prefs }) 
 
   // ── Call Gemini API ──
   const callGemini = async (prompt) => {
-    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
