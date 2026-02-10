@@ -4150,8 +4150,9 @@ function SellPositionModal({ target, onClose, onSaveTrades }) {
     // FIFO: close lots from oldest to newest
     const sortedLots = [...target.stockTrades].sort((a, b) => new Date(a.date) - new Date(b.date));
     let remainingToSell = qty;
-    const updatedTrades = [];
     const closedTrades = [];
+    const affectedLotIds = new Set(); // Track which original lots were fully or partially consumed
+    const updatedLots = []; // Partially consumed lots with reduced quantity
 
     sortedLots.forEach(lot => {
       if (remainingToSell <= 0) return;
@@ -4159,13 +4160,15 @@ function SellPositionModal({ target, onClose, onSaveTrades }) {
       const lotEntry = parseFloat(lot.entryPrice) || 0;
 
       if (lotQty <= remainingToSell) {
-        // Close entire lot
+        // Close entire lot — mark original for removal
+        affectedLotIds.add(lot.id);
         const lotPnl = target.direction === "Long"
           ? Math.round((price - lotEntry) * lotQty * 100) / 100
           : Math.round((lotEntry - price) * lotQty * 100) / 100;
 
         closedTrades.push({
           ...lot,
+          id: Date.now() + Math.random(), // New ID for the closed trade entry
           status: "Closed",
           exitPrice: String(price),
           exitTime: sellTime,
@@ -4175,15 +4178,17 @@ function SellPositionModal({ target, onClose, onSaveTrades }) {
         remainingToSell -= lotQty;
       } else {
         // Partial close: split the lot
+        affectedLotIds.add(lot.id);
         const partialPnl = target.direction === "Long"
           ? Math.round((price - lotEntry) * remainingToSell * 100) / 100
           : Math.round((lotEntry - price) * remainingToSell * 100) / 100;
 
-        // Closed portion
+        // Closed portion — new trade entry
         closedTrades.push({
           ...lot,
           id: Date.now() + Math.random(),
           status: "Closed",
+          date: sellDate,
           quantity: String(remainingToSell),
           exitPrice: String(price),
           exitTime: sellTime,
@@ -4191,8 +4196,8 @@ function SellPositionModal({ target, onClose, onSaveTrades }) {
           notes: (notes || `Partial sell: ${remainingToSell} of ${lotQty} shares @ $${price.toFixed(2)}`),
         });
 
-        // Remaining open portion
-        updatedTrades.push({
+        // Remaining open portion — keeps original ID so it stays in place
+        updatedLots.push({
           ...lot,
           quantity: String(lotQty - remainingToSell),
         });
@@ -4200,18 +4205,12 @@ function SellPositionModal({ target, onClose, onSaveTrades }) {
       }
     });
 
-    // Apply changes to trades
+    // Apply changes to trades array
     onSaveTrades(prev => {
-      let next = [...prev];
-      // Remove all original lots that were fully or partially closed
-      const closedIds = new Set(closedTrades.map(t => t.id));
-      const splitOrigIds = new Set(updatedTrades.map(t => t.id));
-      const lotIds = new Set(target.stockTrades.map(t => t.id));
-
-      next = next.filter(t => !lotIds.has(t.id));
-
-      // Add back: updated (partially closed) lots + closed trades
-      return [...closedTrades, ...updatedTrades, ...next];
+      // Remove only the affected original lots
+      let next = prev.filter(t => !affectedLotIds.has(t.id));
+      // Add back: reduced-qty lots (partial splits) + new closed trade entries
+      return [...closedTrades, ...updatedLots, ...next];
     });
 
     onClose();
