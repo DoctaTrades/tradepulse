@@ -2251,9 +2251,11 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
 
 // ─── TRADE LOG ────────────────────────────────────────────────────────────────
 function TradeLog({ trades, onEdit, onDelete }) {
-  const [filter, setFilter] = useState({ type:"All", direction:"All", status:"All" });
+  const [filter, setFilter] = useState({ type:"All", direction:"All", status:"All", account:"All" });
   const [sort, setSort] = useState({ key:"date", dir:-1 });
   const [search, setSearch] = useState("");
+
+  const uniqueAccounts = useMemo(() => [...new Set(trades.filter(t => t.account).map(t => t.account))].sort(), [trades]);
 
   // Live-enrich closed options trades so P&L always reflects current leg data
   const enriched = useMemo(() => trades.map(t => {
@@ -2265,6 +2267,7 @@ function TradeLog({ trades, onEdit, onDelete }) {
     if (filter.type !== "All" && t.assetType !== filter.type) return false;
     if (filter.direction !== "All" && t.direction !== filter.direction) return false;
     if (filter.status !== "All" && t.status !== filter.status) return false;
+    if (filter.account !== "All" && t.account !== filter.account) return false;
     if (search && !t.ticker.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
@@ -2291,7 +2294,7 @@ function TradeLog({ trades, onEdit, onDelete }) {
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search ticker…" style={{ width:"100%", padding:"8px 12px 8px 36px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", boxSizing:"border-box" }}/>
           <Filter size={14} color="#5c6070" style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)" }}/>
         </div>
-        {[{label:"Type",key:"type",options:["All",...ASSET_TYPES]},{label:"Direction",key:"direction",options:["All",...DIRECTIONS]},{label:"Status",key:"status",options:["All",...STATUSES]}].map(f=>(
+        {[{label:"Type",key:"type",options:["All",...ASSET_TYPES]},{label:"Direction",key:"direction",options:["All",...DIRECTIONS]},{label:"Status",key:"status",options:["All",...STATUSES]},{label:"Account",key:"account",options:["All",...uniqueAccounts]}].map(f=>(
           <select key={f.key} value={filter[f.key]} onChange={e=>setFilter(p=>({...p,[f.key]:e.target.value}))} style={{ padding:"8px 28px 8px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-muted)", fontSize:12, outline:"none", cursor:"pointer", appearance:"none" }}>
             {f.options.map(o=><option key={o} value={o} style={{ background:"var(--tp-sel-bg)", color:"var(--tp-text)" }}>{o==="All"?`All ${f.label}`:o}</option>)}
           </select>
