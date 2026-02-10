@@ -3674,40 +3674,64 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
     });
   };
 
+  // Fetch price from multiple sources
+  const fetchPrice = async (ticker) => {
+    // Source 1: Try Yahoo Finance via public query endpoint
+    try {
+      const resp = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+        if (price && price > 0) return price;
+      }
+    } catch {}
+
+    // Source 2: Try Yahoo Finance v6 quote
+    try {
+      const resp = await fetch(`https://query2.finance.yahoo.com/v6/finance/quote?symbols=${encodeURIComponent(ticker)}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const price = data?.quoteResponse?.result?.[0]?.regularMarketPrice;
+        if (price && price > 0) return price;
+      }
+    } catch {}
+
+    // Source 3: Gemini (without search grounding — uses training knowledge, works for major tickers)
+    try {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: "You are a stock price tool. If you know the approximate current trading price of this stock/ETF, reply with ONLY the number (like 185.42). If you don't know, reply with just the word UNKNOWN. No other text." }] },
+          contents: [{ parts: [{ text: `Current price of ${ticker}` }] }],
+          generationConfig: { maxOutputTokens: 30, temperature: 0 }
+        })
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(" ").trim();
+        if (!text.includes("UNKNOWN")) {
+          const match = text.match(/(\d+[\.,]?\d*)/);
+          if (match) return parseFloat(match[1].replace(",", ""));
+        }
+      }
+    } catch {}
+
+    return null;
+  };
+
   const lookupPrice = async (ticker) => {
     setLookupLoading(ticker);
     setLookupError("");
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            system_instruction: { parts: [{ text: "You are a stock price lookup tool. Reply with ONLY the current price as a number. No dollar sign, no text, no explanation. Just the number like 185.42" }] },
-            contents: [{ parts: [{ text: `Current stock price of ${ticker}` }] }],
-            tools: [{ googleSearch: {} }],
-            generationConfig: { maxOutputTokens: 50, temperature: 0 }
-          })
-        });
-        if (resp.status === 429) {
-          if (attempt === 0) { await new Promise(r => setTimeout(r, 5000)); continue; }
-          setLookupError(`Rate limited — wait a moment and try again`);
-          break;
-        }
-        if (!resp.ok) throw new Error(`Gemini error: ${resp.status}`);
-        const data = await resp.json();
-        const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(" ").trim();
-        const match = text.match(/(\d+[\.,]?\d*)/);
-        if (match) {
-          const price = parseFloat(match[1].replace(",", ""));
-          updatePrices(prev => ({ ...prev, [ticker]: price }));
-        } else {
-          setLookupError(`Could not parse price for ${ticker}`);
-        }
-        break;
-      } catch (err) {
-        if (attempt === 1) setLookupError(`Lookup failed for ${ticker}: ${err.message}`);
+    try {
+      const price = await fetchPrice(ticker);
+      if (price) {
+        updatePrices(prev => ({ ...prev, [ticker]: price }));
+      } else {
+        setLookupError(`Could not find price for ${ticker}`);
       }
+    } catch (err) {
+      setLookupError(`Lookup failed for ${ticker}`);
     }
     setLookupLoading(null);
   };
@@ -3715,36 +3739,20 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
   const lookupAll = async () => {
     setLookupLoading("all");
     setLookupError("");
+    let successCount = 0;
     for (const ticker of allTickers) {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              system_instruction: { parts: [{ text: "You are a stock price lookup tool. Reply with ONLY the current price as a number. No dollar sign, no text, no explanation. Just the number like 185.42" }] },
-              contents: [{ parts: [{ text: `Current stock price of ${ticker}` }] }],
-              tools: [{ googleSearch: {} }],
-              generationConfig: { maxOutputTokens: 50, temperature: 0 }
-            })
-          });
-          if (resp.status === 429) {
-            await new Promise(r => setTimeout(r, attempt === 0 ? 6000 : 10000));
-            continue;
-          }
-          if (!resp.ok) break;
-          const data = await resp.json();
-          const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(" ").trim();
-          const match = text.match(/(\d+[\.,]?\d*)/);
-          if (match) {
-            const price = parseFloat(match[1].replace(",", ""));
-            updatePrices(prev => ({ ...prev, [ticker]: price }));
-          }
-          break;
-        } catch {}
-      }
-      // Wait between tickers to stay under rate limit
-      await new Promise(r => setTimeout(r, 4500));
+      try {
+        const price = await fetchPrice(ticker);
+        if (price) {
+          updatePrices(prev => ({ ...prev, [ticker]: price }));
+          successCount++;
+        }
+      } catch {}
+      // Small delay to be polite to APIs
+      await new Promise(r => setTimeout(r, 500));
+    }
+    if (successCount === 0 && allTickers.length > 0) {
+      setLookupError("Could not fetch prices — try entering them manually");
     }
     setLookupLoading(null);
   };
@@ -3857,7 +3865,7 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
         </div>
         {allTickers.length > 0 && (
           <button onClick={lookupAll} disabled={lookupLoading==="all"} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", borderRadius:8, border:"1px solid rgba(99,102,241,0.3)", background:"rgba(99,102,241,0.06)", color: lookupLoading==="all" ? "var(--tp-faintest)" : "#a5b4fc", cursor: lookupLoading==="all"?"default":"pointer", fontSize:11, fontWeight:600 }}>
-            {lookupLoading==="all" ? <><span style={{ display:"inline-block", width:12, height:12, borderRadius:6, border:"2px solid #a5b4fc", borderTopColor:"transparent", animation:"spin 0.8s linear infinite" }}/> Looking up prices...</> : <><Zap size={12}/> AI Price Lookup</>}
+            {lookupLoading==="all" ? <><span style={{ display:"inline-block", width:12, height:12, borderRadius:6, border:"2px solid #a5b4fc", borderTopColor:"transparent", animation:"spin 0.8s linear infinite" }}/> Fetching prices...</> : <><Zap size={12}/> Fetch All Prices</>}
           </button>
         )}
       </div>
@@ -3964,7 +3972,7 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
                               <input type="number" step="0.01" value={curPrice || ""} onChange={e=>setManualPrice(h.ticker, e.target.value)} placeholder="0.00" style={{ width:"100%", padding:"5px 8px 5px 20px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:6, color:"var(--tp-text)", fontSize:12, fontFamily:"'JetBrains Mono', monospace", outline:"none", boxSizing:"border-box" }}/>
                             </div>
                             <button onClick={()=>lookupPrice(h.ticker)} disabled={isLookingUp || lookupLoading==="all"} style={{ padding:"5px 10px", borderRadius:6, border:"1px solid rgba(99,102,241,0.2)", background:"rgba(99,102,241,0.05)", color: isLookingUp ? "var(--tp-faintest)" : "#a5b4fc", cursor: isLookingUp ? "default" : "pointer", fontSize:10, display:"flex", alignItems:"center", gap:4 }}>
-                              {isLookingUp ? "..." : <><Zap size={10}/> AI</>}
+                              {isLookingUp ? "..." : <><Zap size={10}/> Fetch</>}
                             </button>
                             {curPrice && unrealized !== null && (
                               <span style={{ fontSize:11, color: unrealized >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace", fontWeight:600 }}>
@@ -7661,7 +7669,7 @@ function TradePulseApp({ user, onSignOut }) {
         setGoals(cloud.goals && typeof cloud.goals === "object" && !Array.isArray(cloud.goals) ? cloud.goals : {});
         setDividends(Array.isArray(cloud.dividends) ? cloud.dividends : []);
         const pr = cloud.prefs;
-        setPrefs(pr && typeof pr === "object" && !Array.isArray(pr) ? { theme: pr.theme || "dark", logo: pr.logo || "", banner: pr.banner || "", tabOrder: Array.isArray(pr.tabOrder) ? pr.tabOrder : [], dashWidgets: Array.isArray(pr.dashWidgets) ? pr.dashWidgets : [] } : { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });
+        setPrefs(pr && typeof pr === "object" && !Array.isArray(pr) ? { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [], ...pr } : { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });
       }
       // Check for local data to migrate (only if cloud is empty or doesn't exist)
       if (!cloud && hasLocalData()) {
