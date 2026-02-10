@@ -1608,7 +1608,7 @@ function RiskCalculator({ theme, accountBalances, futuresSettings, customFields 
   );
 }
 
-function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings }) {
+function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs }) {
   const widgetConfig = useMemo(() => {
     if (!dashWidgets || dashWidgets.length === 0) return DEFAULT_DASH_WIDGETS;
     const merged = [];
@@ -1683,15 +1683,41 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
   // ── Compute per-account balance summaries ──
   const accountSummaries = useMemo(() => {
     if (!accountBalances || Object.keys(accountBalances).length === 0) return [];
+    const holdingPrices = prefs?.holdingPrices || {};
+    const balanceOverrides = prefs?.balanceOverrides || {};
+
     return Object.entries(accountBalances).map(([name, startBal]) => {
       const start = parseFloat(startBal) || 0;
       const acctTrades = trades.filter(t => t.account === name && t.pnl !== null);
-      const totalPnL = acctTrades.reduce((s, t) => s + t.pnl, 0);
-      const currentBal = start + totalPnL;
-      const returnPct = start > 0 ? (totalPnL / start) * 100 : 0;
-      return { name, startBal: start, currentBal, totalPnL, returnPct, tradeCount: acctTrades.length };
+      const realizedPnL = acctTrades.reduce((s, t) => s + t.pnl, 0);
+
+      // Calculate unrealized P&L from open positions with current prices
+      const openTrades = trades.filter(t => t.account === name && t.status === "Open");
+      let unrealizedPnL = 0;
+      openTrades.forEach(t => {
+        const curPrice = holdingPrices[t.ticker];
+        if (curPrice && t.entryPrice && t.quantity) {
+          const entry = parseFloat(t.entryPrice) || 0;
+          const qty = parseFloat(t.quantity) || 0;
+          const dir = t.direction === "Short" ? -1 : 1;
+          unrealizedPnL += (curPrice - entry) * qty * dir;
+        }
+      });
+      unrealizedPnL = Math.round(unrealizedPnL * 100) / 100;
+
+      const totalPnL = realizedPnL + unrealizedPnL;
+
+      // Manual override takes priority if set
+      const override = balanceOverrides?.[name];
+      const hasOverride = override !== undefined && override !== null && override !== "";
+      const overrideVal = hasOverride ? parseFloat(override) : null;
+
+      const currentBal = hasOverride ? overrideVal : start + totalPnL;
+      const returnPct = start > 0 ? ((currentBal - start) / start) * 100 : 0;
+
+      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal };
     });
-  }, [accountBalances, trades]);
+  }, [accountBalances, trades, prefs]);
 
   // ── Compute Stats ──
   const stats = useMemo(() => {
@@ -1883,7 +1909,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                 </div>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"end" }}>
                   <div>
-                    <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2 }}>Current Balance</div>
+                    <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2 }}>Current Balance {acct.hasOverride && <span style={{ color:"#eab308" }}>(Override)</span>}</div>
                     <div style={{ fontSize:20, fontWeight:700, color: acct.currentBal >= acct.startBal ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>
                       ${acct.currentBal.toLocaleString("en-US",{minimumFractionDigits:2, maximumFractionDigits:2})}
                     </div>
@@ -1891,6 +1917,13 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                   <div style={{ textAlign:"right" }}>
                     <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2 }}>P&L</div>
                     <div style={{ fontSize:13, fontWeight:600, color: acct.totalPnL >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fmt(acct.totalPnL)}</div>
+                    {acct.unrealizedPnL !== 0 && !acct.hasOverride && (
+                      <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>
+                        <span style={{ color: acct.realizedPnL >= 0 ? "rgba(74,222,128,0.6)" : "rgba(248,113,113,0.6)" }}>R: {fmt(acct.realizedPnL)}</span>
+                        {" · "}
+                        <span style={{ color: acct.unrealizedPnL >= 0 ? "rgba(96,165,250,0.7)" : "rgba(248,113,113,0.6)" }}>U: {fmt(acct.unrealizedPnL)}</span>
+                      </div>
+                    )}
                     <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>started ${acct.startBal.toLocaleString()} · {acct.tradeCount} trades</div>
                   </div>
                 </div>
@@ -3487,16 +3520,18 @@ function JournalTab({ journal, onSave, trades, theme }) {
 }
 
 // ─── HOLDINGS TAB ────────────────────────────────────────────────────────────
-function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, onSaveDividends, onSaveTrades }) {
+function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, onSaveDividends, onSaveTrades, prefs, onSavePrefs }) {
   const [accountFilter, setAccountFilter] = useState("All");
   const [expandedTicker, setExpandedTicker] = useState(null);
   const [viewingSrc, setViewingSrc] = useState(null);
-  const [currentPrices, setCurrentPrices] = useState({});
+  const [currentPrices, setCurrentPrices] = useState(prefs?.holdingPrices || {});
   const [lookupLoading, setLookupLoading] = useState(null);
   const [lookupError, setLookupError] = useState("");
   const [holdingsSection, setHoldingsSection] = useState("positions"); // positions | dividends
   const [showDivModal, setShowDivModal] = useState(false);
   const [editingDiv, setEditingDiv] = useState(null);
+  const [showSellModal, setShowSellModal] = useState(false);
+  const [sellTarget, setSellTarget] = useState(null); // { ticker, totalShares, avgEntry, direction, account, stockTrades }
 
   const accounts = useMemo(() => {
     const accts = new Set();
@@ -3587,31 +3622,41 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
   }, [holdings]);
 
   // AI price lookup
+  // Persist prices to prefs whenever they change
+  const updatePrices = (updater) => {
+    setCurrentPrices(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      if (onSavePrefs) onSavePrefs(p => ({ ...p, holdingPrices: next }));
+      return next;
+    });
+  };
+
   const lookupPrice = async (ticker) => {
     setLookupLoading(ticker);
     setLookupError("");
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-          messages: [{ role: "user", content: `What is the current stock price of ${ticker}? Reply with ONLY the number, no dollar sign, no other text. Just the price number like 185.42` }]
+          system_instruction: { parts: [{ text: "You are a stock price lookup tool. Reply with ONLY the current price as a number. No dollar sign, no text, no explanation. Just the number like 185.42" }] },
+          contents: [{ parts: [{ text: `Current stock price of ${ticker}` }] }],
+          tools: [{ googleSearch: {} }],
+          generationConfig: { maxOutputTokens: 50, temperature: 0 }
         })
       });
-      const data = await response.json();
-      const text = (data.content || []).map(b => b.text || "").join(" ").trim();
-      const match = text.match(/(\d+\.?\d*)/);
+      if (!resp.ok) throw new Error(`Gemini error: ${resp.status}`);
+      const data = await resp.json();
+      const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(" ").trim();
+      const match = text.match(/(\d+[\.,]?\d*)/);
       if (match) {
-        const price = parseFloat(match[1]);
-        setCurrentPrices(prev => ({ ...prev, [ticker]: price }));
+        const price = parseFloat(match[1].replace(",", ""));
+        updatePrices(prev => ({ ...prev, [ticker]: price }));
       } else {
         setLookupError(`Could not parse price for ${ticker}`);
       }
     } catch (err) {
-      setLookupError(`Lookup failed for ${ticker}`);
+      setLookupError(`Lookup failed for ${ticker}: ${err.message}`);
     }
     setLookupLoading(null);
   };
@@ -3621,31 +3666,35 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
     setLookupError("");
     for (const ticker of allTickers) {
       try {
-        const response = await fetch("https://api.anthropic.com/v1/messages", {
+        const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 1000,
-            tools: [{ type: "web_search_20250305", name: "web_search" }],
-            messages: [{ role: "user", content: `What is the current stock price of ${ticker}? Reply with ONLY the number, no dollar sign, no other text. Just the price number like 185.42` }]
+            system_instruction: { parts: [{ text: "You are a stock price lookup tool. Reply with ONLY the current price as a number. No dollar sign, no text, no explanation. Just the number like 185.42" }] },
+            contents: [{ parts: [{ text: `Current stock price of ${ticker}` }] }],
+            tools: [{ googleSearch: {} }],
+            generationConfig: { maxOutputTokens: 50, temperature: 0 }
           })
         });
-        const data = await response.json();
-        const text = (data.content || []).map(b => b.text || "").join(" ").trim();
-        const match = text.match(/(\d+\.?\d*)/);
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(" ").trim();
+        const match = text.match(/(\d+[\.,]?\d*)/);
         if (match) {
-          setCurrentPrices(prev => ({ ...prev, [ticker]: parseFloat(match[1]) }));
+          const price = parseFloat(match[1].replace(",", ""));
+          updatePrices(prev => ({ ...prev, [ticker]: price }));
         }
       } catch {}
+      // Small delay between requests to avoid rate limiting
+      await new Promise(r => setTimeout(r, 300));
     }
     setLookupLoading(null);
   };
 
   const setManualPrice = (ticker, val) => {
     const num = parseFloat(val);
-    if (!isNaN(num) && num > 0) setCurrentPrices(prev => ({ ...prev, [ticker]: num }));
-    else if (val === "") setCurrentPrices(prev => { const n = { ...prev }; delete n[ticker]; return n; });
+    if (!isNaN(num) && num > 0) updatePrices(prev => ({ ...prev, [ticker]: num }));
+    else if (val === "") updatePrices(prev => { const n = { ...prev }; delete n[ticker]; return n; });
   };
 
   // Compute unrealized P&L for a holding
@@ -3850,7 +3899,7 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
 
                         {/* Price input row - always visible for stocks */}
                         {hasStocks && (
-                          <div style={{ padding:"0 18px 12px", display:"flex", alignItems:"center", gap:8 }} onClick={e=>e.stopPropagation()}>
+                          <div style={{ padding:"0 18px 12px", display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }} onClick={e=>e.stopPropagation()}>
                             <span style={{ fontSize:10, color:"var(--tp-faint)", whiteSpace:"nowrap" }}>Current Price:</span>
                             <div style={{ position:"relative", width:110 }}>
                               <span style={{ position:"absolute", left:8, top:"50%", transform:"translateY(-50%)", color:"var(--tp-faintest)", fontSize:12 }}>$</span>
@@ -3864,6 +3913,9 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
                                 {unrealized >= 0 ? "▲" : "▼"} {fmt(unrealized)} ({unrealizedPct >= 0?"+":""}{unrealizedPct.toFixed(2)}%)
                               </span>
                             )}
+                            <button onClick={()=>{setSellTarget({ ticker:h.ticker, totalShares:h.totalShares, avgEntry:h.avgEntry, direction:h.netDirection, account:acct, stockTrades:h.stockTrades }); setShowSellModal(true);}} style={{ marginLeft:"auto", padding:"5px 14px", borderRadius:6, border:"1px solid rgba(248,113,113,0.25)", background:"rgba(248,113,113,0.06)", color:"#f87171", cursor:"pointer", fontSize:10, fontWeight:600, display:"flex", alignItems:"center", gap:4, whiteSpace:"nowrap" }}>
+                              <TrendingDown size={10}/> Sell / Close
+                            </button>
                           </div>
                         )}
 
@@ -3990,7 +4042,188 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
         setEditingDiv={setEditingDiv}
       />}
 
+      {showSellModal && sellTarget && <SellPositionModal
+        target={sellTarget}
+        onClose={()=>{setShowSellModal(false);setSellTarget(null);}}
+        onSaveTrades={onSaveTrades}
+      />}
+
       {viewingSrc && <ScreenshotLightbox src={viewingSrc} onClose={()=>setViewingSrc(null)}/>}
+    </div>
+  );
+}
+
+// ─── SELL / CLOSE POSITION MODAL ─────────────────────────────────────────────
+function SellPositionModal({ target, onClose, onSaveTrades }) {
+  const [sellQty, setSellQty] = useState("");
+  const [sellPrice, setSellPrice] = useState("");
+  const [sellDate, setSellDate] = useState(new Date().toISOString().split("T")[0]);
+  const [sellTime, setSellTime] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const qty = parseFloat(sellQty) || 0;
+  const price = parseFloat(sellPrice) || 0;
+  const isValid = qty > 0 && qty <= target.totalShares && price > 0;
+  const isFullClose = qty === target.totalShares;
+
+  // Calculate P&L
+  const pnl = isValid ? (
+    target.direction === "Long"
+      ? Math.round((price - target.avgEntry) * qty * 100) / 100
+      : Math.round((target.avgEntry - price) * qty * 100) / 100
+  ) : null;
+
+  const handleSell = () => {
+    if (!isValid) return;
+
+    // FIFO: close lots from oldest to newest
+    const sortedLots = [...target.stockTrades].sort((a, b) => new Date(a.date) - new Date(b.date));
+    let remainingToSell = qty;
+    const updatedTrades = [];
+    const closedTrades = [];
+
+    sortedLots.forEach(lot => {
+      if (remainingToSell <= 0) return;
+      const lotQty = parseFloat(lot.quantity) || 0;
+      const lotEntry = parseFloat(lot.entryPrice) || 0;
+
+      if (lotQty <= remainingToSell) {
+        // Close entire lot
+        const lotPnl = target.direction === "Long"
+          ? Math.round((price - lotEntry) * lotQty * 100) / 100
+          : Math.round((lotEntry - price) * lotQty * 100) / 100;
+
+        closedTrades.push({
+          ...lot,
+          status: "Closed",
+          exitPrice: String(price),
+          exitTime: sellTime,
+          pnl: lotPnl,
+          notes: (lot.notes ? lot.notes + " | " : "") + (notes || `Sold ${lotQty} shares @ $${price.toFixed(2)}`),
+        });
+        remainingToSell -= lotQty;
+      } else {
+        // Partial close: split the lot
+        const partialPnl = target.direction === "Long"
+          ? Math.round((price - lotEntry) * remainingToSell * 100) / 100
+          : Math.round((lotEntry - price) * remainingToSell * 100) / 100;
+
+        // Closed portion
+        closedTrades.push({
+          ...lot,
+          id: Date.now() + Math.random(),
+          status: "Closed",
+          quantity: String(remainingToSell),
+          exitPrice: String(price),
+          exitTime: sellTime,
+          pnl: partialPnl,
+          notes: (notes || `Partial sell: ${remainingToSell} of ${lotQty} shares @ $${price.toFixed(2)}`),
+        });
+
+        // Remaining open portion
+        updatedTrades.push({
+          ...lot,
+          quantity: String(lotQty - remainingToSell),
+        });
+        remainingToSell = 0;
+      }
+    });
+
+    // Apply changes to trades
+    onSaveTrades(prev => {
+      let next = [...prev];
+      // Remove all original lots that were fully or partially closed
+      const closedIds = new Set(closedTrades.map(t => t.id));
+      const splitOrigIds = new Set(updatedTrades.map(t => t.id));
+      const lotIds = new Set(target.stockTrades.map(t => t.id));
+
+      next = next.filter(t => !lotIds.has(t.id));
+
+      // Add back: updated (partially closed) lots + closed trades
+      return [...closedTrades, ...updatedTrades, ...next];
+    });
+
+    onClose();
+  };
+
+  const inputStyle = { width:"100%", padding:"10px 14px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", boxSizing:"border-box" };
+  const labelStyle = { fontSize:11, color:"var(--tp-faint)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.6, display:"block", marginBottom:5 };
+
+  return (
+    <div className="tp-modal-overlay" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, backdropFilter:"blur(4px)" }} onClick={onClose}>
+      <div className="tp-modal" style={{ background:"var(--tp-bg2)", borderRadius:18, width:"min(92vw, 440px)", maxHeight:"90vh", overflowY:"auto", padding:"28px 24px", boxShadow:"0 24px 60px rgba(0,0,0,0.5)" }} onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+          <div>
+            <h3 style={{ color:"var(--tp-text)", fontSize:18, fontWeight:700, margin:0 }}>Sell / Close Position</h3>
+            <div style={{ fontSize:12, color:"var(--tp-faint)", marginTop:4 }}>
+              {target.ticker} · {target.totalShares.toLocaleString()} shares @ ${target.avgEntry.toFixed(2)} avg · {target.account}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:"var(--tp-faint)", cursor:"pointer" }}><X size={20}/></button>
+        </div>
+
+        {/* Quick fill buttons */}
+        <div style={{ marginBottom:16 }}>
+          <label style={labelStyle}>Shares to Sell</label>
+          <div style={{ display:"flex", gap:6, marginBottom:8 }}>
+            <button onClick={()=>setSellQty(String(target.totalShares))} style={{ padding:"6px 12px", borderRadius:6, border:"1px solid rgba(248,113,113,0.2)", background: qty===target.totalShares?"rgba(248,113,113,0.12)":"transparent", color:"#f87171", cursor:"pointer", fontSize:11, fontWeight:600 }}>All ({target.totalShares})</button>
+            <button onClick={()=>setSellQty(String(Math.floor(target.totalShares/2)))} style={{ padding:"6px 12px", borderRadius:6, border:"1px solid var(--tp-border-l)", background:"transparent", color:"var(--tp-muted)", cursor:"pointer", fontSize:11, fontWeight:600 }}>Half ({Math.floor(target.totalShares/2)})</button>
+            <button onClick={()=>setSellQty(String(Math.floor(target.totalShares/4)))} style={{ padding:"6px 12px", borderRadius:6, border:"1px solid var(--tp-border-l)", background:"transparent", color:"var(--tp-muted)", cursor:"pointer", fontSize:11, fontWeight:600 }}>Quarter ({Math.floor(target.totalShares/4)})</button>
+          </div>
+          <input type="number" value={sellQty} onChange={e=>setSellQty(e.target.value)} placeholder={`Max: ${target.totalShares}`} style={inputStyle} min="0" max={target.totalShares} step="1"/>
+          {qty > target.totalShares && <div style={{ fontSize:11, color:"#f87171", marginTop:4 }}>Cannot sell more than {target.totalShares} shares</div>}
+        </div>
+
+        <div style={{ marginBottom:16 }}>
+          <label style={labelStyle}>Sell Price</label>
+          <div style={{ position:"relative" }}>
+            <span style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", color:"var(--tp-faintest)", fontSize:13 }}>$</span>
+            <input type="number" value={sellPrice} onChange={e=>setSellPrice(e.target.value)} placeholder="0.00" style={{ ...inputStyle, paddingLeft:24 }} step="0.01"/>
+          </div>
+        </div>
+
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+          <div>
+            <label style={labelStyle}>Date</label>
+            <input type="date" value={sellDate} onChange={e=>setSellDate(e.target.value)} style={inputStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>Time (optional)</label>
+            <input type="time" value={sellTime} onChange={e=>setSellTime(e.target.value)} style={inputStyle}/>
+          </div>
+        </div>
+
+        <div style={{ marginBottom:20 }}>
+          <label style={labelStyle}>Notes (optional)</label>
+          <input type="text" value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Reason for selling..." style={inputStyle}/>
+        </div>
+
+        {/* P&L Preview */}
+        {isValid && (
+          <div style={{ background: pnl >= 0 ? "rgba(74,222,128,0.06)" : "rgba(248,113,113,0.06)", border:`1px solid ${pnl >= 0 ? "rgba(74,222,128,0.2)" : "rgba(248,113,113,0.2)"}`, borderRadius:12, padding:"16px 18px", marginBottom:20 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+              <span style={{ fontSize:12, color:"var(--tp-muted)" }}>{isFullClose ? "Close entire position" : `Sell ${qty} of ${target.totalShares} shares`}</span>
+              <span style={{ fontSize:20, fontWeight:700, color: pnl >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fmt(pnl)}</span>
+            </div>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:"var(--tp-faint)" }}>
+              <span>Avg entry: ${target.avgEntry.toFixed(2)} → Sell: ${price.toFixed(2)}</span>
+              <span>{target.avgEntry > 0 ? ((pnl / (target.avgEntry * qty)) * 100).toFixed(2) : "0.00"}%</span>
+            </div>
+            {!isFullClose && (
+              <div style={{ marginTop:8, fontSize:11, color:"#60a5fa" }}>
+                Remaining: {(target.totalShares - qty).toLocaleString()} shares will stay open
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display:"flex", gap:10 }}>
+          <button onClick={onClose} style={{ flex:1, padding:"12px 0", borderRadius:10, border:"1px solid var(--tp-border-l)", background:"transparent", color:"var(--tp-muted)", cursor:"pointer", fontSize:13, fontWeight:600 }}>Cancel</button>
+          <button onClick={handleSell} disabled={!isValid} style={{ flex:1, padding:"12px 0", borderRadius:10, border:"none", background: isValid ? "linear-gradient(135deg,#ef4444,#f87171)" : "var(--tp-input)", color: isValid ? "#fff" : "#5c6070", cursor: isValid ? "pointer" : "default", fontSize:13, fontWeight:700, boxShadow: isValid ? "0 4px 14px rgba(239,68,68,0.3)" : "none" }}>
+            {isFullClose ? "Close Position" : `Sell ${qty || 0} Shares`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -5801,7 +6034,7 @@ function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCusto
         <button onClick={()=>setSection("ai")} style={{ padding:"8px 16px", border:"none", background:section==="ai"?"rgba(99,102,241,0.15)":"transparent", color:section==="ai"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="ai"?"2px solid #6366f1":"none", whiteSpace:"nowrap", flexShrink:0 }}>AI Integration</button>
       </div>
 
-      {section === "accounts" && <AccountBalancesManager accountBalances={accountBalances} onSave={onSaveAccountBalances} customFields={customFields}/>}
+      {section === "accounts" && <AccountBalancesManager accountBalances={accountBalances} onSave={onSaveAccountBalances} customFields={customFields} trades={trades} prefs={prefs} onSavePrefs={onSavePrefs}/>}
 
       {section === "futures" && (
         <div>
@@ -6898,7 +7131,7 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
 }
 
 // ─── ACCOUNT BALANCES MANAGER ────────────────────────────────────────────────
-function AccountBalancesManager({ accountBalances, onSave, customFields }) {
+function AccountBalancesManager({ accountBalances, onSave, customFields, trades, prefs, onSavePrefs }) {
   const [addingAccount, setAddingAccount] = useState(false);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountBalance, setNewAccountBalance] = useState("");
@@ -7027,6 +7260,72 @@ function AccountBalancesManager({ accountBalances, onSave, customFields }) {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* ── Manual Balance Override ── */}
+      {accountsWithBalances.length > 0 && (
+        <div style={{ marginTop:24 }}>
+          <div style={{ fontSize:16, fontWeight:600, color:"var(--tp-text)", marginBottom:4 }}>Balance Override</div>
+          <div style={{ fontSize:12, color:"var(--tp-faint)", marginBottom:16, lineHeight:1.6 }}>
+            Manually set today's account value. This overrides the auto-calculated balance (starting balance + realized P&L + unrealized P&L) on the Dashboard. Useful if there are deposits, withdrawals, transfers, or missing trades. Leave blank to use auto-calculation.
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(260px, 1fr))", gap:10 }}>
+            {accountsWithBalances.map(name => {
+              const overrides = prefs?.balanceOverrides || {};
+              const currentOverride = overrides[name] !== undefined ? String(overrides[name]) : "";
+              const hasOverride = currentOverride !== "";
+
+              // Calculate what auto would show
+              const start = parseFloat(accountBalances[name]) || 0;
+              const realizedPnL = (trades || []).filter(t => t.account === name && t.pnl !== null).reduce((s, t) => s + t.pnl, 0);
+              const holdingPrices = prefs?.holdingPrices || {};
+              const openTrades = (trades || []).filter(t => t.account === name && t.status === "Open");
+              let unrealizedPnL = 0;
+              openTrades.forEach(t => {
+                const cp = holdingPrices[t.ticker];
+                if (cp && t.entryPrice && t.quantity) {
+                  const dir = t.direction === "Short" ? -1 : 1;
+                  unrealizedPnL += (cp - (parseFloat(t.entryPrice)||0)) * (parseFloat(t.quantity)||0) * dir;
+                }
+              });
+              const autoBal = start + realizedPnL + Math.round(unrealizedPnL * 100) / 100;
+
+              return (
+                <div key={name} style={{ background:"var(--tp-panel)", border:`1px solid ${hasOverride ? "rgba(234,179,8,0.2)" : "var(--tp-panel-b)"}`, borderRadius:10, padding:"14px 16px" }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                    <span style={{ fontSize:13, fontWeight:600, color:"var(--tp-text)" }}>{name}</span>
+                    {hasOverride && (
+                      <button onClick={()=>onSavePrefs(p => { const o = { ...(p.balanceOverrides||{}) }; delete o[name]; return { ...p, balanceOverrides: o }; })} style={{ fontSize:9, color:"#eab308", background:"rgba(234,179,8,0.1)", border:"1px solid rgba(234,179,8,0.2)", borderRadius:4, padding:"2px 8px", cursor:"pointer", fontWeight:600 }}>
+                        Clear Override
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ fontSize:10, color:"var(--tp-faintest)", marginBottom:6 }}>
+                    Auto-calculated: ${autoBal.toLocaleString("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 })}
+                  </div>
+                  <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                    <div style={{ position:"relative", flex:1 }}>
+                      <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"var(--tp-faintest)", fontSize:12 }}>$</span>
+                      <input
+                        type="number"
+                        value={currentOverride}
+                        onChange={e => {
+                          const val = e.target.value;
+                          onSavePrefs(p => ({
+                            ...p,
+                            balanceOverrides: { ...(p.balanceOverrides||{}), [name]: val === "" ? undefined : parseFloat(val) }
+                          }));
+                        }}
+                        placeholder="Leave blank for auto"
+                        style={{ width:"100%", padding:"8px 10px 8px 22px", background:"var(--tp-input)", border:`1px solid ${hasOverride ? "rgba(234,179,8,0.3)" : "var(--tp-border-l)"}`, borderRadius:6, color:"var(--tp-text)", fontSize:13, outline:"none", fontFamily:"'JetBrains Mono', monospace", boxSizing:"border-box" }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
@@ -7432,10 +7731,10 @@ function TradePulseApp({ user, onSignOut }) {
       </>}
 
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings}/>}
+        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
         {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme}/>}
-        {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades}/>}
+        {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs}/>}
         {tab==="review" && <ReviewTab trades={trades} accountBalances={accountBalances} theme={theme} prefs={prefs} journal={journal} goals={goals} playbooks={playbooks}/>}
         {tab==="playbook" && <PlaybookTab playbooks={playbooks} onSave={setPlaybooks} trades={trades} theme={theme}/>}
         {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme}/>}
