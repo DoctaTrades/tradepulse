@@ -5032,7 +5032,7 @@ function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }
 // ─── AI TRADE COACH ─────────────────────────────────────────────────────────
 const COACH_DAILY_LIMIT = 10;
 const GEMINI_MODEL = "gemini-2.0-flash";
-const GEMINI_FREE_KEY = "AIzaSyDiLqNoR_IhamolV6qqS8S7rHDzKi1J3Ns";
+const GEMINI_FREE_KEY = "AIzaSyB4AaSl43an7_Gz_Iu8JSec1xF_P4mSrsc";
 
 function AICoach({ trades, accountBalances, journal, goals, playbooks, prefs }) {
   const [mode, setMode] = useState(null);
