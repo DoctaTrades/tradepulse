@@ -1709,7 +1709,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       let wheelPremium = 0;
       (wheelTrades || []).filter(wt => wt.account === name).forEach(wt => {
         if (wt.type === "CSP" || wt.type === "CC") {
-          wheelPremium += ((parseFloat(wt.openPremium)||0) - (parseFloat(wt.closePremium)||0)) * (parseInt(wt.contracts)||0) * 100;
+          wheelPremium += ((parseFloat(wt.openPremium)||0) - (parseFloat(wt.closePremium)||0)) * (parseInt(wt.contracts)||0) * 100 - (parseFloat(wt.fees)||0);
         }
       });
       wheelPremium = Math.round(wheelPremium * 100) / 100;
@@ -2578,7 +2578,7 @@ function WheelPositionCard({ position, collapsed, onToggle, onAddTrade, onEditTr
   
   trades.forEach(trade => {
     if (trade.type === "CSP") {
-      const net = ((parseFloat(trade.openPremium)||0) - (parseFloat(trade.closePremium)||0)) * (parseInt(trade.contracts)||0) * 100;
+      const net = ((parseFloat(trade.openPremium)||0) - (parseFloat(trade.closePremium)||0)) * (parseInt(trade.contracts)||0) * 100 - (parseFloat(trade.fees)||0);
       totalPremium += net;
       if (trade.assigned) {
         const shares = (parseInt(trade.contracts)||0) * 100;
@@ -2586,7 +2586,7 @@ function WheelPositionCard({ position, collapsed, onToggle, onAddTrade, onEditTr
         totalCost += shares * (parseFloat(trade.strike)||0);
       }
     } else if (trade.type === "CC") {
-      const net = ((parseFloat(trade.openPremium)||0) - (parseFloat(trade.closePremium)||0)) * (parseInt(trade.contracts)||0) * 100;
+      const net = ((parseFloat(trade.openPremium)||0) - (parseFloat(trade.closePremium)||0)) * (parseInt(trade.contracts)||0) * 100 - (parseFloat(trade.fees)||0);
       totalPremium += net;
       if (trade.calledAway) {
         ownedShares -= (parseInt(trade.sharesCalledAway)||0);
@@ -2650,15 +2650,18 @@ function TradeHistoryRow({ trade, onEdit, onDelete }) {
   
   let summary = "";
   if (trade.type === "CSP") {
-    const net = ((parseFloat(trade.openPremium)||0) - (parseFloat(trade.closePremium)||0)) * (parseInt(trade.contracts)||0) * 100;
+    const net = ((parseFloat(trade.openPremium)||0) - (parseFloat(trade.closePremium)||0)) * (parseInt(trade.contracts)||0) * 100 - (parseFloat(trade.fees)||0);
     summary = `${trade.contracts} contracts @ $${trade.strike} → $${net.toFixed(2)}`;
+    if (parseFloat(trade.fees) > 0) summary += ` (fees: $${parseFloat(trade.fees).toFixed(2)})`;
     if (trade.assigned) summary += " (Assigned)";
   } else if (trade.type === "CC") {
-    const net = ((parseFloat(trade.openPremium)||0) - (parseFloat(trade.closePremium)||0)) * (parseInt(trade.contracts)||0) * 100;
+    const net = ((parseFloat(trade.openPremium)||0) - (parseFloat(trade.closePremium)||0)) * (parseInt(trade.contracts)||0) * 100 - (parseFloat(trade.fees)||0);
     summary = `${trade.contracts} contracts @ $${trade.strike} → $${net.toFixed(2)}`;
+    if (parseFloat(trade.fees) > 0) summary += ` (fees: $${parseFloat(trade.fees).toFixed(2)})`;
     if (trade.calledAway) summary += ` (Called ${trade.sharesCalledAway})`;
   } else if (trade.type === "Shares") {
     summary = `${trade.shares} shares @ $${trade.avgPrice}`;
+    if (parseFloat(trade.fees) > 0) summary += ` (fees: $${parseFloat(trade.fees).toFixed(2)})`;
   }
 
   return (
@@ -2708,10 +2711,11 @@ function NewPositionModal({ onSave, onClose, accounts, prefillTicker, prefillAcc
 }
 
 function WheelTradeModal({ ticker, onSave, onClose, editTrade, accounts, defaultAccount }) {
-  const [t, setT] = useState(editTrade || { id:Date.now(), ticker, type:"CSP", date:new Date().toISOString().split("T")[0], contracts:"", strike:"", openPremium:"", closePremium:"", expiry:"", assigned:false, calledAway:false, sharesCalledAway:"", shares:"", avgPrice:"", notes:"", account: defaultAccount || "" });
+  const [t, setT] = useState(editTrade || { id:Date.now(), ticker, type:"CSP", date:new Date().toISOString().split("T")[0], contracts:"", strike:"", openPremium:"", closePremium:"", expiry:"", assigned:false, calledAway:false, sharesCalledAway:"", shares:"", avgPrice:"", notes:"", account: defaultAccount || "", fees:"" });
   const set = k => v => setT(p=>({...p,[k]:v}));
   
-  const netPremium = t.type==="CSP" || t.type==="CC" ? ((parseFloat(t.openPremium)||0) - (parseFloat(t.closePremium)||0)) * (parseInt(t.contracts)||0) * 100 : 0;
+  const fees = parseFloat(t.fees) || 0;
+  const netPremium = t.type==="CSP" || t.type==="CC" ? ((parseFloat(t.openPremium)||0) - (parseFloat(t.closePremium)||0)) * (parseInt(t.contracts)||0) * 100 - fees : 0;
 
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, backdropFilter:"blur(3px)" }}>
@@ -2732,11 +2736,12 @@ function WheelTradeModal({ ticker, onSave, onClose, editTrade, accounts, default
               <Input label="Strike" value={t.strike} onChange={set("strike")} type="number" placeholder="150"/>
               <Input label="Expiry" value={t.expiry} onChange={set("expiry")} type="date"/>
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:10 }}>
               <Input label="Open Premium (per contract)" value={t.openPremium} onChange={set("openPremium")} type="number" placeholder="0.50"/>
               <Input label="Close Premium (if closed)" value={t.closePremium} onChange={set("closePremium")} type="number" placeholder="0.10"/>
+              <Input label="Fees / Commissions" value={t.fees} onChange={set("fees")} type="number" placeholder="0.00"/>
             </div>
-            {netPremium > 0 && <div style={{ fontSize:12, color:"#4ade80", fontWeight:600 }}>Net Premium: ${netPremium.toFixed(2)}</div>}
+            {netPremium !== 0 && <div style={{ fontSize:12, color: netPremium > 0 ? "#4ade80" : "#f87171", fontWeight:600 }}>Net Premium: ${netPremium.toFixed(2)}{fees > 0 ? ` (after $${fees.toFixed(2)} fees)` : ""}</div>}
             {t.type==="CSP" && (
               <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:10, paddingTop:10, borderTop:"1px solid var(--tp-border)" }}>
                 <input type="checkbox" checked={t.assigned} onChange={e=>set("assigned")(e.target.checked)} style={{ width:16, height:16, cursor:"pointer" }}/>
@@ -2758,9 +2763,10 @@ function WheelTradeModal({ ticker, onSave, onClose, editTrade, accounts, default
         {t.type==="Shares" && (
           <div style={{ background:"rgba(99,102,241,0.06)", borderRadius:10, padding:"14px 16px", marginBottom:14, border:"1px solid rgba(99,102,241,0.15)" }}>
             <div style={{ fontSize:11, color:"#6366f1", fontWeight:600, marginBottom:10, textTransform:"uppercase", letterSpacing:0.8 }}>Shares Transaction</div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
               <Input label="Shares (+/- for buy/sell)" value={t.shares} onChange={set("shares")} type="number" placeholder="100"/>
               <Input label="Avg Price" value={t.avgPrice} onChange={set("avgPrice")} type="number" placeholder="10.13"/>
+              <Input label="Fees" value={t.fees} onChange={set("fees")} type="number" placeholder="0.00"/>
             </div>
           </div>
         )}
