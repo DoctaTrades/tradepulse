@@ -1608,7 +1608,7 @@ function RiskCalculator({ theme, accountBalances, futuresSettings, customFields 
   );
 }
 
-function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs }) {
+function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, wheelTrades }) {
   const widgetConfig = useMemo(() => {
     if (!dashWidgets || dashWidgets.length === 0) return DEFAULT_DASH_WIDGETS;
     const merged = [];
@@ -1705,7 +1705,16 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       });
       unrealizedPnL = Math.round(unrealizedPnL * 100) / 100;
 
-      const totalPnL = realizedPnL + unrealizedPnL;
+      // Calculate wheel premium income for this account
+      let wheelPremium = 0;
+      (wheelTrades || []).filter(wt => wt.account === name).forEach(wt => {
+        if (wt.type === "CSP" || wt.type === "CC") {
+          wheelPremium += ((parseFloat(wt.openPremium)||0) - (parseFloat(wt.closePremium)||0)) * (parseInt(wt.contracts)||0) * 100;
+        }
+      });
+      wheelPremium = Math.round(wheelPremium * 100) / 100;
+
+      const totalPnL = realizedPnL + unrealizedPnL + wheelPremium;
 
       // Manual override takes priority if set
       const override = balanceOverrides?.[name];
@@ -1715,9 +1724,9 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       const currentBal = hasOverride ? overrideVal : start + totalPnL;
       const returnPct = start > 0 ? ((currentBal - start) / start) * 100 : 0;
 
-      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal };
+      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, wheelPremium, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal };
     });
-  }, [accountBalances, trades, prefs]);
+  }, [accountBalances, trades, prefs, wheelTrades]);
 
   // ── Compute Stats ──
   const stats = useMemo(() => {
@@ -1917,11 +1926,17 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                   <div style={{ textAlign:"right" }}>
                     <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2 }}>P&L</div>
                     <div style={{ fontSize:13, fontWeight:600, color: acct.totalPnL >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fmt(acct.totalPnL)}</div>
-                    {acct.unrealizedPnL !== 0 && !acct.hasOverride && (
+                    {(acct.unrealizedPnL !== 0 || acct.wheelPremium !== 0) && !acct.hasOverride && (
                       <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>
                         <span style={{ color: acct.realizedPnL >= 0 ? "rgba(74,222,128,0.6)" : "rgba(248,113,113,0.6)" }}>R: {fmt(acct.realizedPnL)}</span>
-                        {" · "}
-                        <span style={{ color: acct.unrealizedPnL >= 0 ? "rgba(96,165,250,0.7)" : "rgba(248,113,113,0.6)" }}>U: {fmt(acct.unrealizedPnL)}</span>
+                        {acct.unrealizedPnL !== 0 && <>
+                          {" · "}
+                          <span style={{ color: acct.unrealizedPnL >= 0 ? "rgba(96,165,250,0.7)" : "rgba(248,113,113,0.6)" }}>U: {fmt(acct.unrealizedPnL)}</span>
+                        </>}
+                        {acct.wheelPremium !== 0 && <>
+                          {" · "}
+                          <span style={{ color:"rgba(167,139,250,0.7)" }}>W: {fmt(acct.wheelPremium)}</span>
+                        </>}
                       </div>
                     )}
                     <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>started ${acct.startBal.toLocaleString()} · {acct.tradeCount} trades</div>
@@ -2479,25 +2494,28 @@ function Watchlist({ watchlists, onSave, onPromoteTrade }) {
 }
 
 // ─── WHEEL TAB ────────────────────────────────────────────────────────────────
-function WheelTab({ wheelTrades, onSave }) {
+function WheelTab({ wheelTrades, onSave, accounts, trades }) {
   const [collapsed, setCollapsed] = useState({});
   const [showAddPositionModal, setShowAddPositionModal] = useState(false);
   const [showAddTradeModal, setShowAddTradeModal] = useState(false);
   const [editingTrade, setEditingTrade] = useState(null);
   const [selectedTicker, setSelectedTicker] = useState(null);
+  const [selectedAccount, setSelectedAccount] = useState("");
+  const [accountFilter, setAccountFilter] = useState("All");
 
-  // Group trades by ticker
+  // Group trades by ticker + account
   const positions = useMemo(() => {
     const grouped = {};
-    wheelTrades.forEach(trade => {
-      if (!grouped[trade.ticker]) grouped[trade.ticker] = [];
-      grouped[trade.ticker].push(trade);
+    const filtered = accountFilter === "All" ? wheelTrades : wheelTrades.filter(t => t.account === accountFilter);
+    filtered.forEach(trade => {
+      const key = `${trade.ticker}|${trade.account || "Unassigned"}`;
+      if (!grouped[key]) grouped[key] = { ticker: trade.ticker, account: trade.account || "Unassigned", trades: [] };
+      grouped[key].trades.push(trade);
     });
-    return Object.entries(grouped).map(([ticker, trades]) => ({
-      ticker,
-      trades: trades.sort((a, b) => new Date(b.date) - new Date(a.date))
-    }));
-  }, [wheelTrades]);
+    return Object.values(grouped).map(g => ({ ...g, trades: g.trades.sort((a, b) => new Date(b.date) - new Date(a.date)) }));
+  }, [wheelTrades, accountFilter]);
+
+  const wheelAccounts = useMemo(() => [...new Set(wheelTrades.map(t => t.account).filter(Boolean))], [wheelTrades]);
 
   const handleSaveTrade = (trade) => {
     onSave(prev => {
@@ -2508,38 +2526,50 @@ function WheelTab({ wheelTrades, onSave }) {
     setShowAddTradeModal(false);
     setEditingTrade(null);
     setSelectedTicker(null);
+    setSelectedAccount("");
   };
 
   const handleDeleteTrade = (id) => onSave(prev => prev.filter(t => t.id !== id));
-  const handleDeletePosition = (ticker) => onSave(prev => prev.filter(t => t.ticker !== ticker));
+  const handleDeletePosition = (ticker, account) => onSave(prev => prev.filter(t => !(t.ticker === ticker && (t.account || "Unassigned") === account)));
 
   const openNewPosition = () => setShowAddPositionModal(true);
-  const openNewTrade = (ticker) => { setSelectedTicker(ticker); setEditingTrade(null); setShowAddTradeModal(true); };
+  const openNewTrade = (ticker, account) => { setSelectedTicker(ticker); setSelectedAccount(account || ""); setEditingTrade(null); setShowAddTradeModal(true); };
   const openEditTrade = (trade) => { setEditingTrade(trade); setShowAddTradeModal(true); };
 
   return (
     <div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
-        <div><div style={{ fontSize:18, fontWeight:600, color:"var(--tp-text)", marginBottom:4 }}>Wheel Strategy Tracker</div><div style={{ fontSize:13, color:"var(--tp-faint)" }}>Track positions with collapsible trade history</div></div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+        <div><div style={{ fontSize:18, fontWeight:600, color:"var(--tp-text)", marginBottom:4 }}>Wheel Strategy Tracker</div><div style={{ fontSize:13, color:"var(--tp-faint)" }}>Track CSPs, covered calls, and share assignments per account</div></div>
         <button onClick={openNewPosition} style={{ display:"flex", alignItems:"center", gap:7, padding:"8px 18px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:600, boxShadow:"0 4px 14px rgba(99,102,241,0.3)" }}><Plus size={15}/> New Position</button>
       </div>
+
+      {/* Account filter */}
+      {wheelAccounts.length > 0 && (
+        <div style={{ display:"flex", gap:6, marginBottom:16, flexWrap:"wrap", alignItems:"center" }}>
+          <span style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, fontWeight:600 }}>Account:</span>
+          <button onClick={()=>setAccountFilter("All")} style={{ padding:"4px 12px", borderRadius:6, border:`1px solid ${accountFilter==="All"?"#6366f1":"var(--tp-border-l)"}`, background:accountFilter==="All"?"rgba(99,102,241,0.12)":"transparent", color:accountFilter==="All"?"#a5b4fc":"var(--tp-faint)", cursor:"pointer", fontSize:11, fontWeight:600 }}>All</button>
+          {wheelAccounts.map(a => (
+            <button key={a} onClick={()=>setAccountFilter(a)} style={{ padding:"4px 12px", borderRadius:6, border:`1px solid ${accountFilter===a?"#6366f1":"var(--tp-border-l)"}`, background:accountFilter===a?"rgba(99,102,241,0.12)":"transparent", color:accountFilter===a?"#a5b4fc":"var(--tp-faint)", cursor:"pointer", fontSize:11, fontWeight:600 }}>{a}</button>
+          ))}
+        </div>
+      )}
 
       {positions.length === 0 ? (
         <div style={{ textAlign:"center", padding:"70px 20px", color:"var(--tp-faint)" }}><RefreshCw size={48} style={{ margin:"0 auto 16px", opacity:0.35 }}/><p style={{ margin:0, fontSize:15 }}>No wheel positions yet. Start by adding a ticker.</p></div>
       ) : (
         <div style={{ display:"grid", gap:14 }}>
-          {positions.map(pos => <WheelPositionCard key={pos.ticker} position={pos} collapsed={collapsed[pos.ticker]} onToggle={()=>setCollapsed(p=>({...p,[pos.ticker]:!p[pos.ticker]}))} onAddTrade={()=>openNewTrade(pos.ticker)} onEditTrade={openEditTrade} onDeleteTrade={handleDeleteTrade} onDeletePosition={()=>handleDeletePosition(pos.ticker)}/>)}
+          {positions.map(pos => <WheelPositionCard key={`${pos.ticker}-${pos.account}`} position={pos} collapsed={collapsed[`${pos.ticker}-${pos.account}`]} onToggle={()=>setCollapsed(p=>({...p,[`${pos.ticker}-${pos.account}`]:!p[`${pos.ticker}-${pos.account}`]}))} onAddTrade={()=>openNewTrade(pos.ticker, pos.account)} onEditTrade={openEditTrade} onDeleteTrade={handleDeleteTrade} onDeletePosition={()=>handleDeletePosition(pos.ticker, pos.account)}/>)}
         </div>
       )}
 
-      {showAddPositionModal && <NewPositionModal onSave={(ticker)=>{openNewTrade(ticker);setShowAddPositionModal(false);}} onClose={()=>setShowAddPositionModal(false)}/>}
-      {showAddTradeModal && <WheelTradeModal ticker={selectedTicker || editingTrade?.ticker} onSave={handleSaveTrade} onClose={()=>{setShowAddTradeModal(false);setEditingTrade(null);setSelectedTicker(null);}} editTrade={editingTrade}/>}
+      {showAddPositionModal && <NewPositionModal onSave={(ticker, account)=>{openNewTrade(ticker, account);setShowAddPositionModal(false);}} onClose={()=>setShowAddPositionModal(false)} accounts={accounts || []}/>}
+      {showAddTradeModal && <WheelTradeModal ticker={selectedTicker || editingTrade?.ticker} onSave={handleSaveTrade} onClose={()=>{setShowAddTradeModal(false);setEditingTrade(null);setSelectedTicker(null);setSelectedAccount("");}} editTrade={editingTrade} accounts={accounts || []} defaultAccount={selectedAccount || editingTrade?.account || ""}/>}
     </div>
   );
 }
 
 function WheelPositionCard({ position, collapsed, onToggle, onAddTrade, onEditTrade, onDeleteTrade, onDeletePosition }) {
-  const { ticker, trades } = position;
+  const { ticker, trades, account } = position;
   
   // Calculate totals across all trades
   let totalPremium = 0;
@@ -2569,7 +2599,7 @@ function WheelPositionCard({ position, collapsed, onToggle, onAddTrade, onEditTr
   });
   
   const adjCostPerShare = ownedShares > 0 ? (totalCost - totalPremium) / ownedShares : 0;
-  const status = ownedShares > 0 ? "Active" : "Closed";
+  const status = ownedShares > 0 ? "Active" : totalPremium > 0 ? "Collecting" : "Closed";
 
   return (
     <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:12, overflow:"hidden", transition:"border-color 0.2s" }} onMouseEnter={e=>e.currentTarget.style.borderColor="rgba(99,102,241,0.3)"} onMouseLeave={e=>e.currentTarget.style.borderColor="rgba(255,255,255,0.07)"}>
@@ -2581,7 +2611,8 @@ function WheelPositionCard({ position, collapsed, onToggle, onAddTrade, onEditTr
             <div>
               <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                 <div style={{ fontSize:18, fontWeight:700, color:"var(--tp-text)" }}>{ticker}</div>
-                <span style={{ fontSize:10, fontWeight:600, color: status==="Active"?"#60a5fa":"#8a8f9e", background: status==="Active"?"rgba(96,165,250,0.15)":"rgba(138,143,158,0.15)", padding:"2px 8px", borderRadius:4, textTransform:"uppercase", letterSpacing:0.5 }}>{status}</span>
+                <span style={{ fontSize:10, fontWeight:600, color: status==="Active"?"#60a5fa":status==="Collecting"?"#4ade80":"#8a8f9e", background: status==="Active"?"rgba(96,165,250,0.15)":status==="Collecting"?"rgba(74,222,128,0.15)":"rgba(138,143,158,0.15)", padding:"2px 8px", borderRadius:4, textTransform:"uppercase", letterSpacing:0.5 }}>{status}</span>
+                {account && account !== "Unassigned" && <span style={{ fontSize:9, fontWeight:600, color:"#a5b4fc", background:"rgba(99,102,241,0.12)", padding:"2px 8px", borderRadius:4 }}>{account}</span>}
                 <span style={{ fontSize:11, color:"var(--tp-faint)" }}>{trades.length} trade{trades.length!==1?"s":""}</span>
               </div>
             </div>
@@ -2649,24 +2680,35 @@ function TradeHistoryRow({ trade, onEdit, onDelete }) {
   );
 }
 
-function NewPositionModal({ onSave, onClose }) {
-  const [ticker, setTicker] = useState("");
+function NewPositionModal({ onSave, onClose, accounts, prefillTicker, prefillAccount }) {
+  const [ticker, setTicker] = useState(prefillTicker || "");
+  const [account, setAccount] = useState(prefillAccount || "");
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, backdropFilter:"blur(3px)" }}>
-      <div style={{ background:"var(--tp-sel-bg)", borderRadius:16, width:"min(96vw, 400px)", padding:28, border:"1px solid var(--tp-border-l)", boxShadow:"0 24px 60px rgba(0,0,0,0.4)" }}>
+      <div style={{ background:"var(--tp-sel-bg)", borderRadius:16, width:"min(96vw, 420px)", padding:28, border:"1px solid var(--tp-border-l)", boxShadow:"0 24px 60px rgba(0,0,0,0.4)" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:22 }}><h3 style={{ color:"var(--tp-text)", fontSize:17, fontWeight:600, margin:0 }}>New Wheel Position</h3><button onClick={onClose} style={{ background:"none", border:"none", color:"var(--tp-faint)", cursor:"pointer" }}><X size={20}/></button></div>
-        <Input label="Ticker" value={ticker} onChange={v=>setTicker(v.toUpperCase())} placeholder="AAPL" style={{ marginBottom:20 }}/>
+        <Input label="Ticker" value={ticker} onChange={v=>setTicker(v.toUpperCase())} placeholder="AAPL" style={{ marginBottom:14 }}/>
+        {accounts.length > 0 && (
+          <div style={{ marginBottom:20 }}>
+            <label style={{ fontSize:11, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.8, display:"block", marginBottom:5 }}>Account</label>
+            <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+              {accounts.map(a => (
+                <button key={a} onClick={()=>setAccount(a)} style={{ padding:"6px 14px", borderRadius:6, border:`1px solid ${account===a?"#6366f1":"var(--tp-border-l)"}`, background:account===a?"rgba(99,102,241,0.12)":"transparent", color:account===a?"#a5b4fc":"var(--tp-faint)", cursor:"pointer", fontSize:12, fontWeight:account===a?600:400 }}>{a}</button>
+              ))}
+            </div>
+          </div>
+        )}
         <div style={{ display:"flex", justifyContent:"flex-end", gap:10 }}>
           <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid rgba(255,255,255,0.12)", background:"transparent", color:"var(--tp-muted)", cursor:"pointer", fontSize:13 }}>Cancel</button>
-          <button onClick={()=>{if(ticker.trim()) onSave(ticker.trim());}} style={{ padding:"9px 22px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:600, boxShadow:"0 4px 14px rgba(99,102,241,0.3)" }}>Continue</button>
+          <button onClick={()=>{if(ticker.trim()) onSave(ticker.trim(), account);}} style={{ padding:"9px 22px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:600, boxShadow:"0 4px 14px rgba(99,102,241,0.3)" }}>Continue</button>
         </div>
       </div>
     </div>
   );
 }
 
-function WheelTradeModal({ ticker, onSave, onClose, editTrade }) {
-  const [t, setT] = useState(editTrade || { id:Date.now(), ticker, type:"CSP", date:new Date().toISOString().split("T")[0], contracts:"", strike:"", openPremium:"", closePremium:"", expiry:"", assigned:false, calledAway:false, sharesCalledAway:"", shares:"", avgPrice:"", notes:"" });
+function WheelTradeModal({ ticker, onSave, onClose, editTrade, accounts, defaultAccount }) {
+  const [t, setT] = useState(editTrade || { id:Date.now(), ticker, type:"CSP", date:new Date().toISOString().split("T")[0], contracts:"", strike:"", openPremium:"", closePremium:"", expiry:"", assigned:false, calledAway:false, sharesCalledAway:"", shares:"", avgPrice:"", notes:"", account: defaultAccount || "" });
   const set = k => v => setT(p=>({...p,[k]:v}));
   
   const netPremium = t.type==="CSP" || t.type==="CC" ? ((parseFloat(t.openPremium)||0) - (parseFloat(t.closePremium)||0)) * (parseInt(t.contracts)||0) * 100 : 0;
@@ -2676,9 +2718,10 @@ function WheelTradeModal({ ticker, onSave, onClose, editTrade }) {
       <div style={{ background:"var(--tp-sel-bg)", borderRadius:16, width:"min(96vw, 580px)", maxHeight:"92vh", overflowY:"auto", padding:28, border:"1px solid var(--tp-border-l)", boxShadow:"0 24px 60px rgba(0,0,0,0.4)" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:22 }}><h3 style={{ color:"var(--tp-text)", fontSize:17, fontWeight:600, margin:0 }}>{editTrade?"Edit":"New"} Trade - {ticker}</h3><button onClick={onClose} style={{ background:"none", border:"none", color:"var(--tp-faint)", cursor:"pointer" }}><X size={20}/></button></div>
         
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:14 }}>
           <div><label style={{ fontSize:11, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.8, display:"block", marginBottom:5 }}>Trade Type</label><select value={t.type} onChange={e=>set("type")(e.target.value)} style={{ width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", appearance:"none", cursor:"pointer", boxSizing:"border-box" }}><option value="CSP" style={{ background:"var(--tp-sel-bg)" }}>Cash-Secured Put</option><option value="CC" style={{ background:"var(--tp-sel-bg)" }}>Covered Call</option><option value="Shares" style={{ background:"var(--tp-sel-bg)" }}>Buy/Sell Shares</option></select></div>
           <Input label="Date" value={t.date} onChange={set("date")} type="date"/>
+          <div><label style={{ fontSize:11, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.8, display:"block", marginBottom:5 }}>Account</label><select value={t.account || ""} onChange={e=>set("account")(e.target.value)} style={{ width:"100%", padding:"9px 12px", background: t.account ? "rgba(99,102,241,0.06)" : "var(--tp-input)", border:`1px solid ${t.account ? "rgba(99,102,241,0.2)" : "var(--tp-border-l)"}`, borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", appearance:"none", cursor:"pointer", boxSizing:"border-box" }}><option value="" style={{ background:"var(--tp-sel-bg)" }}>— No Account —</option>{(accounts||[]).map(a => <option key={a} value={a} style={{ background:"var(--tp-sel-bg)" }}>{a}</option>)}</select></div>
         </div>
 
         {(t.type==="CSP" || t.type==="CC") && (
@@ -3520,7 +3563,7 @@ function JournalTab({ journal, onSave, trades, theme }) {
 }
 
 // ─── HOLDINGS TAB ────────────────────────────────────────────────────────────
-function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, onSaveDividends, onSaveTrades, prefs, onSavePrefs }) {
+function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, onSaveDividends, onSaveTrades, prefs, onSavePrefs, onStartWheel }) {
   const [accountFilter, setAccountFilter] = useState("All");
   const [expandedTicker, setExpandedTicker] = useState(null);
   const [viewingSrc, setViewingSrc] = useState(null);
@@ -3634,37 +3677,7 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
   const lookupPrice = async (ticker) => {
     setLookupLoading(ticker);
     setLookupError("");
-    try {
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: "You are a stock price lookup tool. Reply with ONLY the current price as a number. No dollar sign, no text, no explanation. Just the number like 185.42" }] },
-          contents: [{ parts: [{ text: `Current stock price of ${ticker}` }] }],
-          tools: [{ googleSearch: {} }],
-          generationConfig: { maxOutputTokens: 50, temperature: 0 }
-        })
-      });
-      if (!resp.ok) throw new Error(`Gemini error: ${resp.status}`);
-      const data = await resp.json();
-      const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(" ").trim();
-      const match = text.match(/(\d+[\.,]?\d*)/);
-      if (match) {
-        const price = parseFloat(match[1].replace(",", ""));
-        updatePrices(prev => ({ ...prev, [ticker]: price }));
-      } else {
-        setLookupError(`Could not parse price for ${ticker}`);
-      }
-    } catch (err) {
-      setLookupError(`Lookup failed for ${ticker}: ${err.message}`);
-    }
-    setLookupLoading(null);
-  };
-
-  const lookupAll = async () => {
-    setLookupLoading("all");
-    setLookupError("");
-    for (const ticker of allTickers) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
           method: "POST",
@@ -3676,17 +3689,62 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
             generationConfig: { maxOutputTokens: 50, temperature: 0 }
           })
         });
-        if (!resp.ok) continue;
+        if (resp.status === 429) {
+          if (attempt === 0) { await new Promise(r => setTimeout(r, 5000)); continue; }
+          setLookupError(`Rate limited — wait a moment and try again`);
+          break;
+        }
+        if (!resp.ok) throw new Error(`Gemini error: ${resp.status}`);
         const data = await resp.json();
         const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(" ").trim();
         const match = text.match(/(\d+[\.,]?\d*)/);
         if (match) {
           const price = parseFloat(match[1].replace(",", ""));
           updatePrices(prev => ({ ...prev, [ticker]: price }));
+        } else {
+          setLookupError(`Could not parse price for ${ticker}`);
         }
-      } catch {}
-      // Small delay between requests to avoid rate limiting
-      await new Promise(r => setTimeout(r, 300));
+        break;
+      } catch (err) {
+        if (attempt === 1) setLookupError(`Lookup failed for ${ticker}: ${err.message}`);
+      }
+    }
+    setLookupLoading(null);
+  };
+
+  const lookupAll = async () => {
+    setLookupLoading("all");
+    setLookupError("");
+    for (const ticker of allTickers) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              system_instruction: { parts: [{ text: "You are a stock price lookup tool. Reply with ONLY the current price as a number. No dollar sign, no text, no explanation. Just the number like 185.42" }] },
+              contents: [{ parts: [{ text: `Current stock price of ${ticker}` }] }],
+              tools: [{ googleSearch: {} }],
+              generationConfig: { maxOutputTokens: 50, temperature: 0 }
+            })
+          });
+          if (resp.status === 429) {
+            await new Promise(r => setTimeout(r, attempt === 0 ? 6000 : 10000));
+            continue;
+          }
+          if (!resp.ok) break;
+          const data = await resp.json();
+          const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(" ").trim();
+          const match = text.match(/(\d+[\.,]?\d*)/);
+          if (match) {
+            const price = parseFloat(match[1].replace(",", ""));
+            updatePrices(prev => ({ ...prev, [ticker]: price }));
+          }
+          break;
+        } catch {}
+      }
+      // Wait between tickers to stay under rate limit
+      await new Promise(r => setTimeout(r, 4500));
     }
     setLookupLoading(null);
   };
@@ -3916,6 +3974,11 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
                             <button onClick={()=>{setSellTarget({ ticker:h.ticker, totalShares:h.totalShares, avgEntry:h.avgEntry, direction:h.netDirection, account:acct, stockTrades:h.stockTrades }); setShowSellModal(true);}} style={{ marginLeft:"auto", padding:"5px 14px", borderRadius:6, border:"1px solid rgba(248,113,113,0.25)", background:"rgba(248,113,113,0.06)", color:"#f87171", cursor:"pointer", fontSize:10, fontWeight:600, display:"flex", alignItems:"center", gap:4, whiteSpace:"nowrap" }}>
                               <TrendingDown size={10}/> Sell / Close
                             </button>
+                            {h.totalShares >= 100 && onStartWheel && (
+                              <button onClick={()=>onStartWheel(h.ticker, acct, h.totalShares, h.avgEntry)} style={{ padding:"5px 14px", borderRadius:6, border:"1px solid rgba(99,102,241,0.25)", background:"rgba(99,102,241,0.06)", color:"#a5b4fc", cursor:"pointer", fontSize:10, fontWeight:600, display:"flex", alignItems:"center", gap:4, whiteSpace:"nowrap" }}>
+                                <RefreshCw size={10}/> Start Wheel
+                              </button>
+                            )}
                           </div>
                         )}
 
@@ -6004,7 +6067,7 @@ function SetupGuide() {
   );
 }
 
-function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCustomFields, accountBalances, onSaveAccountBalances, trades, onSaveTrades, prefs, onSavePrefs, theme }) {
+function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCustomFields, accountBalances, onSaveAccountBalances, trades, onSaveTrades, prefs, onSavePrefs, theme, wheelTrades }) {
   const [section, setSection] = useState("accounts"); // accounts | appearance | futures | custom | importexport | ai
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingPreset, setEditingPreset] = useState(null);
@@ -6034,7 +6097,7 @@ function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCusto
         <button onClick={()=>setSection("ai")} style={{ padding:"8px 16px", border:"none", background:section==="ai"?"rgba(99,102,241,0.15)":"transparent", color:section==="ai"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="ai"?"2px solid #6366f1":"none", whiteSpace:"nowrap", flexShrink:0 }}>AI Integration</button>
       </div>
 
-      {section === "accounts" && <AccountBalancesManager accountBalances={accountBalances} onSave={onSaveAccountBalances} customFields={customFields} trades={trades} prefs={prefs} onSavePrefs={onSavePrefs}/>}
+      {section === "accounts" && <AccountBalancesManager accountBalances={accountBalances} onSave={onSaveAccountBalances} customFields={customFields} trades={trades} prefs={prefs} onSavePrefs={onSavePrefs} wheelTrades={wheelTrades}/>}
 
       {section === "futures" && (
         <div>
@@ -7131,7 +7194,7 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
 }
 
 // ─── ACCOUNT BALANCES MANAGER ────────────────────────────────────────────────
-function AccountBalancesManager({ accountBalances, onSave, customFields, trades, prefs, onSavePrefs }) {
+function AccountBalancesManager({ accountBalances, onSave, customFields, trades, prefs, onSavePrefs, wheelTrades }) {
   const [addingAccount, setAddingAccount] = useState(false);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountBalance, setNewAccountBalance] = useState("");
@@ -7289,7 +7352,7 @@ function AccountBalancesManager({ accountBalances, onSave, customFields, trades,
                   unrealizedPnL += (cp - (parseFloat(t.entryPrice)||0)) * (parseFloat(t.quantity)||0) * dir;
                 }
               });
-              const autoBal = start + realizedPnL + Math.round(unrealizedPnL * 100) / 100;
+              const autoBal = start + realizedPnL + Math.round(unrealizedPnL * 100) / 100 + (wheelTrades || []).filter(wt => wt.account === name && (wt.type === "CSP" || wt.type === "CC")).reduce((s, wt) => s + ((parseFloat(wt.openPremium)||0) - (parseFloat(wt.closePremium)||0)) * (parseInt(wt.contracts)||0) * 100, 0);
 
               return (
                 <div key={name} style={{ background:"var(--tp-panel)", border:`1px solid ${hasOverride ? "rgba(234,179,8,0.2)" : "var(--tp-panel-b)"}`, borderRadius:10, padding:"14px 16px" }}>
@@ -7731,16 +7794,21 @@ function TradePulseApp({ user, onSignOut }) {
       </>}
 
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs}/>}
+        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} wheelTrades={wheelTrades}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
         {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme}/>}
-        {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs}/>}
+        {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} onStartWheel={(ticker, account, shares, avgPrice) => {
+          // Create a Shares entry in wheel trades to link the position
+          const wheelShareEntry = { id: Date.now() + Math.random(), ticker, type: "Shares", date: new Date().toISOString().split("T")[0], shares: String(shares), avgPrice: String(avgPrice), notes: `Linked from Holdings (${shares} shares @ $${avgPrice.toFixed(2)})`, account, contracts:"", strike:"", openPremium:"", closePremium:"", expiry:"", assigned:false, calledAway:false, sharesCalledAway:"" };
+          setWheelTrades(prev => [wheelShareEntry, ...prev]);
+          setTab("wheel");
+        }}/>}
         {tab==="review" && <ReviewTab trades={trades} accountBalances={accountBalances} theme={theme} prefs={prefs} journal={journal} goals={goals} playbooks={playbooks}/>}
         {tab==="playbook" && <PlaybookTab playbooks={playbooks} onSave={setPlaybooks} trades={trades} theme={theme}/>}
-        {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme}/>}
+        {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} trades={trades}/>}
         {tab==="watchlist" && <Watchlist watchlists={watchlists} onSave={setWatchlists} onPromoteTrade={promoteTrade} theme={theme}/>}
         {tab==="log" && <TradeLog trades={trades} onEdit={t=>{setEditingTrade(t);setShowTradeModal(true);}} onDelete={handleTradeDelete} theme={theme}/>}
-        {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme}/>}
+        {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme} wheelTrades={wheelTrades}/>}
       </div>
       {showTradeModal && <TradeModal onSave={handleTradeSave} onClose={()=>{setShowTradeModal(false);setEditingTrade(null);}} editTrade={editingTrade} futuresSettings={futuresSettings} customFields={customFields} playbooks={playbooks} theme={theme}/>}
       {showMigration && <MigrationPrompt onMigrate={handleMigrate} onSkip={()=>setShowMigration(false)}/>}
