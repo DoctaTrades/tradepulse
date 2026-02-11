@@ -5227,7 +5227,7 @@ function AICoach({ trades, accountBalances, journal, goals, playbooks, prefs }) 
       body: JSON.stringify({
         system_instruction: { parts: [{ text: prompt.system }] },
         contents: [{ parts: [{ text: prompt.user }] }],
-        generationConfig: { maxOutputTokens: 1024, temperature: 0.7 }
+        generationConfig: { maxOutputTokens: 8192, temperature: 0.7 }
       })
     });
     if (!resp.ok) { const err = await resp.json().catch(()=>({})); throw new Error(err.error?.message || `Gemini error: ${resp.status}`); }
