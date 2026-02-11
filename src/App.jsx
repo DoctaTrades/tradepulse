@@ -2788,9 +2788,30 @@ function WheelTradeModal({ ticker, onSave, onClose, editTrade, accounts, default
   );
 }
 // ─── DAILY GOAL TRACKER ─────────────────────────────────────────────────────
-function GoalTracker({ goals, onSave, trades, theme }) {
+function GoalTracker({ goals, onSave, trades, theme, accounts }) {
   const defaultGoal = { startingBalance: 200, profitPct: 2, stopPct: 1, dailyLog: {} };
-  const g = useMemo(() => (goals && typeof goals === "object" && !Array.isArray(goals) && goals.startingBalance) ? goals : defaultGoal, [goals]);
+
+  // Migrate old flat structure → per-account structure
+  const goalsData = useMemo(() => {
+    if (!goals || typeof goals !== "object" || Array.isArray(goals)) return { accounts: {}, selectedAccount: "All" };
+    // Already new format
+    if (goals.accounts && typeof goals.accounts === "object") return goals;
+    // Old format — migrate to "All Accounts"
+    if (goals.startingBalance !== undefined) {
+      return { accounts: { All: { startingBalance: goals.startingBalance, profitPct: goals.profitPct, stopPct: goals.stopPct, dailyLog: goals.dailyLog || {} } }, selectedAccount: "All" };
+    }
+    return { accounts: {}, selectedAccount: "All" };
+  }, [goals]);
+
+  const [selectedAccount, setSelectedAccount] = useState(goalsData.selectedAccount || "All");
+  const allAccountNames = useMemo(() => {
+    const names = new Set(["All", ...Object.keys(goalsData.accounts || {})]);
+    (accounts || []).forEach(a => names.add(a));
+    return [...names];
+  }, [goalsData, accounts]);
+
+  // Get or create goal config for selected account
+  const g = useMemo(() => goalsData.accounts?.[selectedAccount] || defaultGoal, [goalsData, selectedAccount]);
 
   const [startingBalance, setStartingBalance] = useState(g.startingBalance);
   const [profitPct, setProfitPct] = useState(g.profitPct);
@@ -2799,19 +2820,25 @@ function GoalTracker({ goals, onSave, trades, theme }) {
   const [showProjection, setShowProjection] = useState(false);
   const [projectionDays, setProjectionDays] = useState(30);
 
-  // Sync when goals load
+  // Sync when account changes
   useEffect(() => {
-    if (g.startingBalance) setStartingBalance(g.startingBalance);
-    if (g.profitPct) setProfitPct(g.profitPct);
-    if (g.stopPct) setStopPct(g.stopPct);
-    if (g.dailyLog) setDailyLog(g.dailyLog);
-  }, [g]);
+    const acctGoal = goalsData.accounts?.[selectedAccount] || defaultGoal;
+    setStartingBalance(acctGoal.startingBalance || 200);
+    setProfitPct(acctGoal.profitPct || 2);
+    setStopPct(acctGoal.stopPct || 1);
+    setDailyLog(acctGoal.dailyLog || {});
+  }, [selectedAccount, goalsData]);
 
-  // Auto-save
+  // Save per-account
   const saveGoals = useCallback((overrides = {}) => {
-    const updated = { startingBalance, profitPct, stopPct, dailyLog, ...overrides };
+    const acctData = { startingBalance, profitPct, stopPct, dailyLog, ...overrides };
+    const updated = {
+      ...goalsData,
+      selectedAccount,
+      accounts: { ...(goalsData.accounts || {}), [selectedAccount]: acctData }
+    };
     onSave(updated);
-  }, [startingBalance, profitPct, stopPct, dailyLog, onSave]);
+  }, [startingBalance, profitPct, stopPct, dailyLog, onSave, selectedAccount, goalsData]);
 
   // Compute running balance from daily log
   const sortedDays = useMemo(() => Object.keys(dailyLog).sort(), [dailyLog]);
@@ -2833,14 +2860,18 @@ function GoalTracker({ goals, onSave, trades, theme }) {
   const daysHit = sortedDays.filter(d => dailyLog[d].hit === true).length;
   const daysMissed = sortedDays.filter(d => dailyLog[d].hit === false).length;
 
-  // Today's calculations (based on current running balance)
+  // Today's calculations
   const todayTarget = currentBalance * (profitPct / 100);
   const todayStop = currentBalance * (stopPct / 100);
   const todayStr = new Date().toISOString().split("T")[0];
   const todayEntry = dailyLog[todayStr];
 
-  // Auto-pull today's P&L from trades
-  const todayTrades = useMemo(() => trades.filter(t => t.date === todayStr), [trades, todayStr]);
+  // Auto-pull today's P&L from trades (filtered by account)
+  const todayTrades = useMemo(() => {
+    const dayTrades = trades.filter(t => t.date === todayStr);
+    if (selectedAccount === "All") return dayTrades;
+    return dayTrades.filter(t => t.account === selectedAccount);
+  }, [trades, todayStr, selectedAccount]);
   const todayTradesPnL = todayTrades.filter(t => t.pnl !== null).reduce((s, t) => s + t.pnl, 0);
 
   const logDay = (date, pnl, hit) => {
@@ -2878,16 +2909,26 @@ function GoalTracker({ goals, onSave, trades, theme }) {
   return (
     <div>
       {/* Header */}
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <Target size={20} color="#4ade80"/>
           <span style={{ fontSize:20, fontWeight:700, color:"var(--tp-text)" }}>Daily Goal Tracker</span>
         </div>
       </div>
 
+      {/* Account Selector */}
+      <div style={{ display:"flex", gap:6, marginBottom:16, flexWrap:"wrap", alignItems:"center" }}>
+        <span style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, fontWeight:600, marginRight:4 }}>Account:</span>
+        {allAccountNames.map(a => (
+          <button key={a} onClick={()=>{ setSelectedAccount(a); onSave({ ...goalsData, selectedAccount: a }); }} style={{ padding:"5px 14px", borderRadius:6, border:`1px solid ${selectedAccount===a?"#6366f1":"var(--tp-border-l)"}`, background:selectedAccount===a?"rgba(99,102,241,0.12)":"transparent", color:selectedAccount===a?"#a5b4fc":"var(--tp-faint)", cursor:"pointer", fontSize:11, fontWeight:selectedAccount===a?600:400, transition:"all 0.15s" }}>{a === "All" ? "All Accounts" : a}</button>
+        ))}
+      </div>
+
       {/* Setup Row */}
       <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:14, padding:"20px 22px", marginBottom:16 }}>
-        <div style={{ fontSize:12, fontWeight:600, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.8, marginBottom:14 }}>Account Setup</div>
+        <div style={{ fontSize:12, fontWeight:600, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.8, marginBottom:14 }}>
+          {selectedAccount === "All" ? "All Accounts" : selectedAccount} — Goal Setup
+        </div>
         <div className="tp-goals-setup" style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:14 }}>
           <div>
             <div style={{ fontSize:11, color:"var(--tp-faint)", marginBottom:5 }}>Starting Balance</div>
@@ -7816,7 +7857,7 @@ function TradePulseApp({ user, onSignOut }) {
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
         {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} wheelTrades={wheelTrades}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
-        {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme}/>}
+        {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]}/>}
         {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} onStartWheel={(ticker, account, shares, avgPrice) => {
           // Create a Shares entry in wheel trades to link the position
           const wheelShareEntry = { id: Date.now() + Math.random(), ticker, type: "Shares", date: new Date().toISOString().split("T")[0], shares: String(shares), avgPrice: String(avgPrice), notes: `Linked from Holdings (${shares} shares @ $${avgPrice.toFixed(2)})`, account, contracts:"", strike:"", openPremium:"", closePremium:"", expiry:"", assigned:false, calledAway:false, sharesCalledAway:"" };
