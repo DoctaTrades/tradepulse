@@ -424,7 +424,7 @@ function fmtPct(n) { if (n === null || isNaN(n)) return "—"; return (n >= 0 ? 
 const emptyTrade = (prefill = {}) => ({
   id: Date.now(), date: new Date().toISOString().split("T")[0], ticker: "", assetType: "Stock",
   direction: "Long", status: "Open", strategy: "Day Trade", entryPrice: "", exitPrice: "",
-  quantity: "", fees: "0", pnl: null, notes: "", grade: "", entryTime: "", exitTime: "",
+  quantity: "", fees: "0", pnl: null, notes: "", grade: "", entryTime: "", exitTime: "", exitDate: "",
   stopLoss: "", takeProfit: "",
   optionsStrategyType: "Single Leg", legs: [emptyLeg("Buy","Call")],
   futuresContract: "", tickSize: "", tickValue: "",
@@ -527,7 +527,7 @@ function LegRow({ leg, index, onChange, onRemove, showRemove, locked, showRolls 
   
   return (
     <div style={{ marginBottom:6 }}>
-      <div style={{ display:"grid", gridTemplateColumns:"28px 0.7fr 0.55fr 0.7fr 0.6fr 0.7fr 0.7fr 28px", gap:6, alignItems:"end" }}>
+      <div className="tp-leg-row" style={{ display:"grid", gridTemplateColumns:"28px 0.7fr 0.55fr 0.7fr 0.6fr 0.7fr 0.7fr 28px", gap:6, alignItems:"end" }}>
         <div style={{ width:24, height:24, borderRadius:6, background:"rgba(99,102,241,0.18)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:"#a5b4fc", alignSelf:"center" }}>{index+1}</div>
         {/* Action */}
         <div>
@@ -778,13 +778,20 @@ function TradeModal({ onSave, onClose, editTrade, futuresSettings, customFields,
           <Input label="Status" value={trade.status} onChange={set("status")} options={STATUSES}/>
         </div>
 
-        {/* Row 2 */}
-        <div className="tp-modal-grid4" style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:12, marginBottom:12 }}>
-          <Input label="Date" value={trade.date} onChange={set("date")} type="date"/>
-          <Input label="Entry Time" value={trade.entryTime} onChange={set("entryTime")} type="time"/>
-          <Input label="Exit Time" value={trade.exitTime} onChange={set("exitTime")} type="time"/>
-          <Input label="Trade Style" value={trade.strategy} onChange={set("strategy")} options={STOCK_STRATEGIES}/>
-        </div>
+        {/* Row 2 - Dates & Times */}
+        {(() => {
+          const showExitDate = trade.strategy === "Swing" || trade.strategy === "Position";
+          const cols = showExitDate ? "1fr 1fr 1fr 1fr 1fr" : "1fr 1fr 1fr 1fr";
+          return (
+            <div className="tp-modal-grid4" style={{ display:"grid", gridTemplateColumns:cols, gap:12, marginBottom:12 }}>
+              <Input label={showExitDate ? "Entry Date" : "Date"} value={trade.date} onChange={set("date")} type="date"/>
+              <Input label="Entry Time" value={trade.entryTime} onChange={set("entryTime")} type="time"/>
+              {showExitDate && <Input label="Exit Date" value={trade.exitDate || ""} onChange={set("exitDate")} type="date"/>}
+              <Input label="Exit Time" value={trade.exitTime} onChange={set("exitTime")} type="time"/>
+              <Input label="Trade Style" value={trade.strategy} onChange={set("strategy")} options={STOCK_STRATEGIES}/>
+            </div>
+          );
+        })()}
 
         {/* ── OPTIONS: Legs ── */}
         {trade.assetType === "Options" && (
@@ -807,7 +814,7 @@ function TradeModal({ onSave, onClose, editTrade, futuresSettings, customFields,
               ))
             )}
             {/* Shared expiration + fees (hide shared expiration for Calendar) */}
-            <div style={{ marginTop:10, display:"grid", gridTemplateColumns: isCalendar ? "1fr" : "1fr 1fr", gap:12 }}>
+            <div className="tp-modal-expiry-fees" style={{ marginTop:10, display:"grid", gridTemplateColumns: isCalendar ? "1fr" : "1fr 1fr", gap:12 }}>
               {!isCalendar && <Input label="Expiration (all legs)" value={trade.legs[0]?.expiration || ""} onChange={v => setTrade(p => ({ ...p, legs: p.legs.map(l => ({...l, expiration: v})) }))} type="date"/>}
               <Input label="Fees ($)" value={trade.fees} onChange={set("fees")} type="number" placeholder="0"/>
             </div>
@@ -2340,7 +2347,7 @@ function TradeLog({ trades, onEdit, onDelete }) {
           <div key={t.id} style={{ display:"flex", alignItems:"center", padding:"10px 0", borderBottom:"1px solid var(--tp-border)", background:i%2===0?"var(--tp-card)":"transparent", borderRadius:6, cursor:"pointer", transition:"background 0.15s" }}
             onMouseEnter={e=>e.currentTarget.style.background="rgba(99,102,241,0.07)"} onMouseLeave={e=>e.currentTarget.style.background=i%2===0?"var(--tp-card)":"transparent"}
             onClick={()=>onEdit(t)}>
-            <div style={colStyle(0.7)}><span style={{ color:"var(--tp-faint)", fontSize:12 }}>{t.date}</span></div>
+            <div style={colStyle(0.7)}><span style={{ color:"var(--tp-faint)", fontSize:12 }}>{t.date?.slice(5)}{t.exitDate && t.exitDate !== t.date ? <span style={{ color:"var(--tp-faintest)" }}>{" → "}{t.exitDate.slice(5)}</span> : ""}</span></div>
             <div style={colStyle(1)}>
               <span style={{ fontWeight:600, color:"var(--tp-text)" }}>{t.ticker}</span>
               {t.assetType==="Options" && <span style={{ fontSize:10, color:"#6366f1", marginLeft:6, background:"rgba(99,102,241,0.15)", padding:"2px 6px", borderRadius:4 }}>OPT</span>}
@@ -4237,6 +4244,7 @@ function SellPositionModal({ target, onClose, onSaveTrades }) {
           id: Date.now() + Math.random(), // New ID for the closed trade entry
           status: "Closed",
           exitPrice: String(price),
+          exitDate: sellDate,
           exitTime: sellTime,
           pnl: lotPnl,
           notes: (lot.notes ? lot.notes + " | " : "") + (notes || `Sold ${lotQty} shares @ $${price.toFixed(2)}`),
@@ -4254,9 +4262,9 @@ function SellPositionModal({ target, onClose, onSaveTrades }) {
           ...lot,
           id: Date.now() + Math.random(),
           status: "Closed",
-          date: sellDate,
           quantity: String(remainingToSell),
           exitPrice: String(price),
+          exitDate: sellDate,
           exitTime: sellTime,
           pnl: partialPnl,
           notes: (notes || `Partial sell: ${remainingToSell} of ${lotQty} shares @ $${price.toFixed(2)}`),
@@ -5016,7 +5024,7 @@ function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }
                         {currentTrade.grade && <span style={{ fontSize:14, fontWeight:800, color:gradeColor(currentTrade.grade) }}>{currentTrade.grade}</span>}
                       </div>
                       <div style={{ fontSize:12, color:"var(--tp-faint)" }}>
-                        {currentTrade.date}{currentTrade.entryTime ? ` · ${currentTrade.entryTime}` : ""}{currentTrade.exitTime ? ` – ${currentTrade.exitTime}` : ""}
+                        {currentTrade.date}{currentTrade.entryTime ? ` · ${currentTrade.entryTime}` : ""}{currentTrade.exitDate && currentTrade.exitDate !== currentTrade.date ? ` → ${currentTrade.exitDate}` : ""}{currentTrade.exitTime ? ` · ${currentTrade.exitTime}` : ""}
                         {currentTrade.playbook && <span style={{ color:"#a5b4fc", marginLeft:8 }}>📋 {currentTrade.playbook}</span>}
                       </div>
                     </div>
@@ -6540,7 +6548,7 @@ function DashWidgetManager({ prefs, onSave, theme }) {
 }
 
 // ─── IMPORT / EXPORT MANAGER ────────────────────────────────────────────────
-const EXPORT_FIELDS = ["date","ticker","assetType","direction","status","entryPrice","exitPrice","quantity","fees","pnl","stopLoss","takeProfit","grade","notes","account","timeframe","tradeStrategy","strategy","playbook","entryTime","exitTime","optionsStrategyType","emotions"];
+const EXPORT_FIELDS = ["date","exitDate","ticker","assetType","direction","status","entryPrice","exitPrice","quantity","fees","pnl","stopLoss","takeProfit","grade","notes","account","timeframe","tradeStrategy","strategy","playbook","entryTime","exitTime","optionsStrategyType","emotions"];
 const TRADEPULSE_HEADERS = ["Date","Ticker","Asset Type","Direction","Status","Entry Price","Exit Price","Quantity","Fees","P&L","Stop Loss","Take Profit","Grade","Notes","Account","Timeframe","Strategy","Style","Playbook","Entry Time","Exit Time","Options Strategy","Emotions"];
 
 // Smart column mapping for common broker formats
@@ -7653,6 +7661,8 @@ function TradePulseApp({ user, onSignOut }) {
         .tp-modal { width: 100vw !important; max-height: 95vh !important; border-radius: 18px 18px 0 0 !important; padding: 18px 14px !important; }
         .tp-modal-grid4 { grid-template-columns: 1fr 1fr !important; }
         .tp-modal-grid3 { grid-template-columns: 1fr !important; }
+        .tp-modal-expiry-fees { grid-template-columns: 1fr !important; }
+        .tp-leg-row { grid-template-columns: 28px 1fr 0.8fr 1fr !important; gap: 4px !important; row-gap: 6px !important; }
 
         /* Dashboard */
         .tp-stat-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
