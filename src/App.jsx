@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart, Cell } from "recharts";
-import { TrendingUp, TrendingDown, Plus, X, BookOpen, List, Home, Filter, Award, Target, Activity, Trash2, Eye, ChevronDown, ChevronUp, ChevronRight, Crosshair, Calculator, RefreshCw, Settings, Calendar, DollarSign, BarChart3, Percent, ChevronLeft, Layers, Zap, Camera, Image, CalendarDays, Clipboard, Shield, AlertTriangle, Lightbulb, SkipForward, SkipBack, Upload, Download, Check, FileText, Briefcase, Sun, Moon, Menu } from "lucide-react";
+import { TrendingUp, TrendingDown, Plus, X, BookOpen, List, Home, Filter, Award, Target, Activity, Trash2, Eye, ChevronDown, ChevronUp, ChevronRight, Crosshair, Calculator, RefreshCw, Settings, Calendar, DollarSign, BarChart3, Percent, ChevronLeft, Layers, Zap, Camera, Image, CalendarDays, Clipboard, Shield, AlertTriangle, Lightbulb, SkipForward, SkipBack, Upload, Download, Check, FileText, Briefcase, Sun, Moon, Menu, Clock } from "lucide-react";
 
 // ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
 import { createClient } from "@supabase/supabase-js";
@@ -719,7 +719,7 @@ function CalendarLegRow({ leg, index, onChange, showRolls }) {
 }
 
 // ─── TRADE MODAL ──────────────────────────────────────────────────────────────
-function TradeModal({ onSave, onClose, editTrade, futuresSettings, customFields, playbooks }) {
+function TradeModal({ onSave, onClose, editTrade, futuresSettings, customFields, playbooks, accountBalances }) {
   // Migrate old trades: convert pointValue to tickValue if needed
   const migratedTrade = editTrade ? {
     ...editTrade,
@@ -879,6 +879,37 @@ function TradeModal({ onSave, onClose, editTrade, futuresSettings, customFields,
             <span style={{ color: isPos ? "#4ade80" : "#f87171", fontWeight:600, fontSize:15, fontFamily:"'JetBrains Mono', monospace" }}>P&L: {fmt(pnlPreview)}</span>
           </div>
         )}
+
+        {/* Live Risk Score */}
+        {(() => {
+          const entry = parseFloat(trade.entryPrice) || 0;
+          const stop = parseFloat(trade.stopLoss) || 0;
+          const qty = parseFloat(trade.quantity) || 0;
+          const acctBal = trade.account && accountBalances?.[trade.account]
+            ? parseFloat(accountBalances[trade.account])
+            : Object.values(accountBalances || {}).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+
+          if (!entry || !qty || acctBal <= 0) return null;
+          const dollarRisk = stop > 0 ? Math.abs(entry - stop) * qty : entry * qty * 0.02;
+          const riskPct = (dollarRisk / acctBal) * 100;
+          let label, color;
+          if (riskPct <= 1) { label = "Conservative"; color = "#4ade80"; }
+          else if (riskPct <= 2) { label = "Moderate"; color = "#60a5fa"; }
+          else if (riskPct <= 5) { label = "Elevated"; color = "#eab308"; }
+          else { label = "Oversized"; color = "#f87171"; }
+
+          return (
+            <div style={{ background:`${color}08`, border:`1px solid ${color}25`, borderRadius:10, padding:"10px 16px", marginBottom:14, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <Shield size={14} color={color}/>
+                <span style={{ fontSize:12, color:"var(--tp-text2)" }}>Position Risk:</span>
+                <span style={{ fontSize:13, fontWeight:700, color, fontFamily:"'JetBrains Mono', monospace" }}>{riskPct.toFixed(1)}%</span>
+                <span style={{ fontSize:10, padding:"2px 8px", borderRadius:4, background:`${color}15`, color, fontWeight:600 }}>{label}</span>
+              </div>
+              <span style={{ fontSize:10, color:"var(--tp-faint)" }}>${dollarRisk.toFixed(2)} risk{stop > 0 ? "" : " (est.)"}</span>
+            </div>
+          );
+        })()}
 
         {/* ── CUSTOM FIELDS ── */}
         <div style={{ background:"rgba(99,102,241,0.04)", borderRadius:12, padding:"14px 16px", marginBottom:14, border:"1px solid rgba(99,102,241,0.12)" }}>
@@ -2339,9 +2370,28 @@ function TradeLog({ trades, onEdit, onDelete }) {
       ) : sorted.map((t, i) => {
         const isPos = t.pnl !== null && t.pnl > 0, isNeg = t.pnl !== null && t.pnl < 0;
         const isMultiLeg = t.assetType === "Options" && t.legs && t.legs.length > 1;
-        const entryDisp = isMultiLeg ? "Multi" : (t.entryPrice || "—");
-        const exitDisp = isMultiLeg ? "Leg" : (t.exitPrice || "—");
-        const qtyDisp = isMultiLeg ? `${t.legs.length}L` : (t.quantity || "—");
+        const isOptions = t.assetType === "Options" && t.legs && t.legs.length > 0;
+        let entryDisp, exitDisp, qtyDisp;
+        if (isOptions) {
+          // Show net entry/exit premium and total contracts
+          const totalContracts = t.legs.reduce((s, l) => s + (parseInt(l.contracts) || 1), 0);
+          const netEntry = t.legs.reduce((s, l) => {
+            const p = parseFloat(l.entryPremium) || 0;
+            return s + (l.action === "Sell" ? -p : p);
+          }, 0);
+          const netExit = t.legs.reduce((s, l) => {
+            const p = parseFloat(l.exitPremium) || 0;
+            return s + (l.action === "Sell" ? -p : p);
+          }, 0);
+          const hasExit = t.legs.some(l => l.exitPremium && parseFloat(l.exitPremium) > 0);
+          entryDisp = netEntry !== 0 ? `$${Math.abs(netEntry).toFixed(2)}` : (t.entryPrice || "—");
+          exitDisp = hasExit ? `$${Math.abs(netExit).toFixed(2)}` : (t.exitPrice || "—");
+          qtyDisp = isMultiLeg ? `${totalContracts}×${t.legs.length}L` : `${totalContracts}`;
+        } else {
+          entryDisp = t.entryPrice || "—";
+          exitDisp = t.exitPrice || "—";
+          qtyDisp = t.quantity || "—";
+        }
 
         return (
           <div key={t.id} style={{ display:"flex", alignItems:"center", padding:"10px 0", borderBottom:"1px solid var(--tp-border)", background:i%2===0?"var(--tp-card)":"transparent", borderRadius:6, cursor:"pointer", transition:"background 0.15s" }}
@@ -4728,7 +4778,7 @@ function DividendModal({ onSave, onClose, editDiv, holdingTickers, accountBalanc
 
 // ─── REVIEW TAB ──────────────────────────────────────────────────────────────
 function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }) {
-  const [section, setSection] = useState("risk"); // risk | insights | replay | coach
+  const [section, setSection] = useState("risk"); // risk | performance | insights | replay | coach
   const [replayIdx, setReplayIdx] = useState(0);
   const [replayFilter, setReplayFilter] = useState("all"); // all | wins | losses
   const [viewingSrc, setViewingSrc] = useState(null);
@@ -4871,6 +4921,133 @@ function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }
   }, [closed]);
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  PERFORMANCE ANALYTICS (Holding Period + Asset Type + Risk Score)
+  // ═══════════════════════════════════════════════════════════════════════════
+  const perfStats = useMemo(() => {
+    if (closed.length < 2) return null;
+
+    // ── Holding Period Analysis ──
+    const withDuration = closed.map(t => {
+      const entry = new Date(t.date + "T12:00:00");
+      const exit = t.exitDate ? new Date(t.exitDate + "T12:00:00") : entry;
+      const days = Math.max(0, Math.round((exit - entry) / 86400000));
+      return { ...t, holdDays: days };
+    });
+
+    const winners = withDuration.filter(t => t.pnl > 0);
+    const losers = withDuration.filter(t => t.pnl < 0);
+    const avgHoldWin = winners.length ? winners.reduce((s, t) => s + t.holdDays, 0) / winners.length : 0;
+    const avgHoldLoss = losers.length ? losers.reduce((s, t) => s + t.holdDays, 0) / losers.length : 0;
+
+    // By trade style
+    const byStyle = {};
+    withDuration.forEach(t => {
+      const style = t.strategy || "Untagged";
+      if (!byStyle[style]) byStyle[style] = { wins: 0, losses: 0, pnl: 0, count: 0, holdDays: 0, trades: [] };
+      byStyle[style].count++;
+      byStyle[style].holdDays += t.holdDays;
+      byStyle[style].pnl += t.pnl;
+      if (t.pnl > 0) byStyle[style].wins++; else byStyle[style].losses++;
+      byStyle[style].trades.push(t);
+    });
+
+    // Holding period buckets for scatter
+    const holdBuckets = [
+      { label: "Intraday", min: 0, max: 0 },
+      { label: "1-2 Days", min: 1, max: 2 },
+      { label: "3-5 Days", min: 3, max: 5 },
+      { label: "1-2 Weeks", min: 6, max: 14 },
+      { label: "2+ Weeks", min: 15, max: Infinity },
+    ].map(b => {
+      const trades = withDuration.filter(t => t.holdDays >= b.min && t.holdDays <= b.max);
+      const w = trades.filter(t => t.pnl > 0).length;
+      return {
+        ...b,
+        count: trades.length,
+        wins: w,
+        wr: trades.length > 0 ? (w / trades.length) * 100 : 0,
+        avgPnl: trades.length > 0 ? trades.reduce((s, t) => s + t.pnl, 0) / trades.length : 0,
+        totalPnl: trades.reduce((s, t) => s + t.pnl, 0),
+      };
+    }).filter(b => b.count > 0);
+
+    // ── Asset Type Breakdown ──
+    const byAsset = {};
+    closed.forEach(t => {
+      const a = t.assetType || "Stock";
+      if (!byAsset[a]) byAsset[a] = { wins: 0, losses: 0, pnl: 0, count: 0, avgPnl: 0, pf: 0 };
+      byAsset[a].count++;
+      if (t.pnl > 0) { byAsset[a].wins++; byAsset[a].pnl += t.pnl; }
+      else { byAsset[a].losses++; byAsset[a].pnl += t.pnl; }
+    });
+    Object.values(byAsset).forEach(v => {
+      v.avgPnl = v.count > 0 ? v.pnl / v.count : 0;
+      const grossWin = closed.filter(t => (t.assetType || "Stock") === Object.keys(byAsset).find(k => byAsset[k] === v) && t.pnl > 0).reduce((s, t) => s + t.pnl, 0);
+      const grossLoss = Math.abs(closed.filter(t => (t.assetType || "Stock") === Object.keys(byAsset).find(k => byAsset[k] === v) && t.pnl < 0).reduce((s, t) => s + t.pnl, 0));
+      v.pf = grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? Infinity : 0;
+    });
+
+    // Options strategy breakdown
+    const byOptStrat = {};
+    closed.filter(t => t.assetType === "Options").forEach(t => {
+      const s = t.optionsStrategyType || "Single Leg";
+      if (!byOptStrat[s]) byOptStrat[s] = { wins: 0, losses: 0, pnl: 0, count: 0 };
+      byOptStrat[s].count++;
+      byOptStrat[s].pnl += t.pnl;
+      if (t.pnl > 0) byOptStrat[s].wins++; else byOptStrat[s].losses++;
+    });
+
+    // ── Per-Trade Risk Score ──
+    const scored = closed.map(t => {
+      const acctBal = t.account && accountBalances[t.account] ? parseFloat(accountBalances[t.account]) : totalCapital;
+      if (!acctBal || acctBal <= 0) return { ...t, riskScore: null, riskPct: null, riskLabel: "N/A" };
+      
+      let dollarRisk = 0;
+      const entry = parseFloat(t.entryPrice) || 0;
+      const stop = parseFloat(t.stopLoss) || 0;
+      const qty = parseFloat(t.quantity) || 1;
+
+      if (stop > 0 && entry > 0) {
+        dollarRisk = Math.abs(entry - stop) * qty;
+      } else if (t.pnl < 0) {
+        dollarRisk = Math.abs(t.pnl);
+      } else {
+        dollarRisk = entry * qty * 0.02; // Estimate 2% move if no stop
+      }
+
+      const riskPct = (dollarRisk / acctBal) * 100;
+      let riskLabel, riskColor;
+      if (riskPct <= 1) { riskLabel = "Conservative"; riskColor = "#4ade80"; }
+      else if (riskPct <= 2) { riskLabel = "Moderate"; riskColor = "#60a5fa"; }
+      else if (riskPct <= 5) { riskLabel = "Elevated"; riskColor = "#eab308"; }
+      else { riskLabel = "Oversized"; riskColor = "#f87171"; }
+
+      return { ...t, riskPct, riskLabel, riskColor, dollarRisk };
+    });
+
+    // Risk score stats
+    const riskBuckets = [
+      { label: "Conservative", color: "#4ade80", min: 0, max: 1 },
+      { label: "Moderate", color: "#60a5fa", min: 1, max: 2 },
+      { label: "Elevated", color: "#eab308", min: 2, max: 5 },
+      { label: "Oversized", color: "#f87171", min: 5, max: Infinity },
+    ].map(b => {
+      const trades = scored.filter(t => t.riskPct !== null && t.riskPct >= b.min && t.riskPct < b.max);
+      const w = trades.filter(t => t.pnl > 0).length;
+      return {
+        ...b,
+        count: trades.length,
+        wins: w,
+        wr: trades.length > 0 ? (w / trades.length) * 100 : 0,
+        avgPnl: trades.length > 0 ? trades.reduce((s, t) => s + t.pnl, 0) / trades.length : 0,
+        totalPnl: trades.reduce((s, t) => s + t.pnl, 0),
+      };
+    });
+
+    return { withDuration, avgHoldWin, avgHoldLoss, byStyle, holdBuckets, byAsset, byOptStrat, scored, riskBuckets };
+  }, [closed, accountBalances, totalCapital]);
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  TRADE REPLAY
   // ═══════════════════════════════════════════════════════════════════════════
   const replayTrades = useMemo(() => {
@@ -4892,7 +5069,7 @@ function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }
     <div>
       {/* Section tabs */}
       <div style={{ display:"flex", gap:8, marginBottom:24, borderBottom:"1px solid var(--tp-border)", paddingBottom:2, flexWrap:"wrap" }}>
-        {[{id:"risk",label:"Risk Management",icon:Shield},{id:"insights",label:"Insights",icon:Lightbulb},{id:"replay",label:"Trade Replay",icon:Eye},{id:"coach",label:"AI Coach",icon:Zap}].map(s => (
+        {[{id:"risk",label:"Risk Management",icon:Shield},{id:"performance",label:"Performance",icon:BarChart3},{id:"insights",label:"Insights",icon:Lightbulb},{id:"replay",label:"Trade Replay",icon:Eye},{id:"coach",label:"AI Coach",icon:Zap}].map(s => (
           <button key={s.id} onClick={()=>setSection(s.id)} style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 16px", border:"none", background:section===s.id?"rgba(99,102,241,0.15)":"transparent", color:section===s.id?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section===s.id?"2px solid #6366f1":"none", whiteSpace:"nowrap" }}><s.icon size={14}/> {s.label}</button>
         ))}
       </div>
@@ -4959,6 +5136,178 @@ function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }
                     <div style={{ marginBottom:4 }}><span style={{ color: riskStats.withTP >= closed.length * 0.5 ? "#4ade80" : "#eab308" }}>●</span> Set take-profit targets</div>
                     <div><span style={{ color:"#60a5fa" }}>●</span> Review after 3 consecutive losses</div>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══════ PERFORMANCE ═══════ */}
+      {section === "performance" && (
+        <div>
+          {!perfStats ? (
+            <div style={{ textAlign:"center", padding:"60px 20px", color:"var(--tp-faint)" }}><BarChart3 size={48} style={{ margin:"0 auto 16px", opacity:0.35 }}/><p style={{ fontSize:15, margin:0 }}>Need at least 2 closed trades to analyze performance.</p></div>
+          ) : (
+            <div>
+              {/* ── HOLDING PERIOD ANALYSIS ── */}
+              <div style={panel({ marginBottom:16 })}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:16 }}><Clock size={15} color="#a5b4fc"/><span style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)" }}>Holding Period Analysis</span></div>
+                
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+                  <div style={{ background:"rgba(74,222,128,0.06)", border:"1px solid rgba(74,222,128,0.15)", borderRadius:10, padding:"14px 16px", textAlign:"center" }}>
+                    <div style={{ fontSize:9, color:"#4ade80", textTransform:"uppercase", letterSpacing:0.6, marginBottom:4 }}>Avg Hold — Winners</div>
+                    <div style={{ fontSize:24, fontWeight:800, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>{perfStats.avgHoldWin.toFixed(1)}<span style={{ fontSize:12, fontWeight:400 }}> days</span></div>
+                  </div>
+                  <div style={{ background:"rgba(248,113,113,0.06)", border:"1px solid rgba(248,113,113,0.15)", borderRadius:10, padding:"14px 16px", textAlign:"center" }}>
+                    <div style={{ fontSize:9, color:"#f87171", textTransform:"uppercase", letterSpacing:0.6, marginBottom:4 }}>Avg Hold — Losers</div>
+                    <div style={{ fontSize:24, fontWeight:800, color:"#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{perfStats.avgHoldLoss.toFixed(1)}<span style={{ fontSize:12, fontWeight:400 }}> days</span></div>
+                  </div>
+                </div>
+
+                <div style={{ fontSize:11, color:"var(--tp-faint)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.6, marginBottom:8 }}>P&L by Holding Period</div>
+                <div style={{ display:"grid", gap:6, marginBottom:16 }}>
+                  {perfStats.holdBuckets.map(b => (
+                    <div key={b.label} style={{ display:"grid", gridTemplateColumns:"100px 1fr 60px 70px 80px", gap:10, alignItems:"center", padding:"8px 12px", background:"var(--tp-card)", borderRadius:8, fontSize:12 }}>
+                      <span style={{ color:"var(--tp-text2)", fontWeight:600 }}>{b.label}</span>
+                      <div style={{ height:6, borderRadius:3, background:"var(--tp-input)", overflow:"hidden" }}>
+                        <div style={{ height:"100%", borderRadius:3, width:`${Math.min(b.wr, 100)}%`, background: b.wr >= 55 ? "#4ade80" : b.wr >= 45 ? "#eab308" : "#f87171", transition:"width 0.3s" }}/>
+                      </div>
+                      <span style={{ color:"var(--tp-faint)", fontFamily:"'JetBrains Mono', monospace", fontSize:11, textAlign:"right" }}>{b.wr.toFixed(0)}% WR</span>
+                      <span style={{ color:"var(--tp-muted)", fontFamily:"'JetBrains Mono', monospace", fontSize:11, textAlign:"right" }}>{b.count} trades</span>
+                      <span style={{ color: b.totalPnl >= 0 ? "#4ade80" : "#f87171", fontWeight:600, fontFamily:"'JetBrains Mono', monospace", fontSize:11, textAlign:"right" }}>{fmt(b.totalPnl)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {(() => {
+                  const best = [...perfStats.holdBuckets].filter(b => b.count >= 2).sort((a, b) => b.avgPnl - a.avgPnl)[0];
+                  return best ? (
+                    <div style={{ padding:"10px 14px", background:"rgba(99,102,241,0.06)", border:"1px solid rgba(99,102,241,0.15)", borderRadius:8, fontSize:12, color:"var(--tp-text2)" }}>
+                      💡 <strong style={{ color:"#a5b4fc" }}>Sweet Spot:</strong> Your best results come from <strong>{best.label}</strong> holds — {best.wr.toFixed(0)}% win rate with {fmt(best.avgPnl)} avg P&L
+                    </div>
+                  ) : null;
+                })()}
+              </div>
+
+              {/* ── TRADE STYLE BREAKDOWN ── */}
+              {Object.keys(perfStats.byStyle).length > 1 && (
+                <div style={panel({ marginBottom:16 })}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:16 }}><Activity size={15} color="#a5b4fc"/><span style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)" }}>Trade Style Comparison</span></div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(160px, 1fr))", gap:10 }}>
+                    {Object.entries(perfStats.byStyle).map(([style, v]) => {
+                      const wr = v.count > 0 ? (v.wins / v.count) * 100 : 0;
+                      const avgHold = v.count > 0 ? v.holdDays / v.count : 0;
+                      return (
+                        <div key={style} style={{ background:"var(--tp-card)", borderRadius:10, padding:"14px 16px", border:"1px solid var(--tp-border)", textAlign:"center" }}>
+                          <div style={{ fontSize:13, fontWeight:700, color:"var(--tp-text)", marginBottom:8 }}>{style}</div>
+                          <div style={{ fontSize:20, fontWeight:800, color: v.pnl >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace", marginBottom:4 }}>{fmt(v.pnl)}</div>
+                          <div style={{ fontSize:10, color:"var(--tp-faint)", lineHeight:1.8 }}>
+                            {v.count} trades · {wr.toFixed(0)}% WR<br/>
+                            {v.wins}W / {v.losses}L · {avgHold.toFixed(1)}d avg hold
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ── ASSET TYPE BREAKDOWN ── */}
+              <div style={panel({ marginBottom:16 })}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:16 }}><Layers size={15} color="#a5b4fc"/><span style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)" }}>Asset Type Performance</span></div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:10 }}>
+                  {Object.entries(perfStats.byAsset).map(([asset, v]) => {
+                    const wr = v.count > 0 ? (v.wins / v.count) * 100 : 0;
+                    const icon = asset === "Stock" ? "📈" : asset === "Options" ? "🎯" : "📊";
+                    return (
+                      <div key={asset} style={{ background:"var(--tp-card)", borderRadius:10, padding:"16px 18px", border: v.pnl >= 0 ? "1px solid rgba(74,222,128,0.15)" : "1px solid rgba(248,113,113,0.15)" }}>
+                        <div style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)", marginBottom:10 }}>{icon} {asset}</div>
+                        <div style={{ fontSize:22, fontWeight:800, color: v.pnl >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace", marginBottom:6 }}>{fmt(v.pnl)}</div>
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, fontSize:11 }}>
+                          <div><span style={{ color:"var(--tp-faint)" }}>Win Rate</span><div style={{ color:"var(--tp-text2)", fontWeight:600, fontFamily:"'JetBrains Mono', monospace" }}>{wr.toFixed(0)}%</div></div>
+                          <div><span style={{ color:"var(--tp-faint)" }}>Trades</span><div style={{ color:"var(--tp-text2)", fontWeight:600, fontFamily:"'JetBrains Mono', monospace" }}>{v.count}</div></div>
+                          <div><span style={{ color:"var(--tp-faint)" }}>Avg P&L</span><div style={{ color: v.avgPnl >= 0 ? "#4ade80" : "#f87171", fontWeight:600, fontFamily:"'JetBrains Mono', monospace" }}>{fmt(v.avgPnl)}</div></div>
+                          <div><span style={{ color:"var(--tp-faint)" }}>Profit Factor</span><div style={{ color: v.pf >= 1.5 ? "#4ade80" : v.pf >= 1 ? "#eab308" : "#f87171", fontWeight:600, fontFamily:"'JetBrains Mono', monospace" }}>{v.pf === Infinity ? "∞" : v.pf.toFixed(2)}</div></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {Object.keys(perfStats.byOptStrat).length > 0 && (
+                  <div style={{ marginTop:14, padding:"14px 16px", background:"rgba(99,102,241,0.04)", borderRadius:10, border:"1px solid rgba(99,102,241,0.12)" }}>
+                    <div style={{ fontSize:11, color:"#6366f1", fontWeight:600, textTransform:"uppercase", letterSpacing:0.6, marginBottom:10 }}>Options Strategy Breakdown</div>
+                    <div style={{ display:"grid", gap:4 }}>
+                      {Object.entries(perfStats.byOptStrat).sort((a, b) => b[1].pnl - a[1].pnl).map(([strat, v]) => {
+                        const wr = v.count > 0 ? (v.wins / v.count) * 100 : 0;
+                        return (
+                          <div key={strat} style={{ display:"grid", gridTemplateColumns:"1.2fr 1fr 70px 80px", gap:8, alignItems:"center", padding:"6px 10px", background:"var(--tp-card)", borderRadius:6, fontSize:11 }}>
+                            <span style={{ color:"var(--tp-text2)", fontWeight:600 }}>{strat}</span>
+                            <div style={{ height:5, borderRadius:3, background:"var(--tp-input)", overflow:"hidden" }}>
+                              <div style={{ height:"100%", borderRadius:3, width:`${Math.min(wr, 100)}%`, background: wr >= 55 ? "#4ade80" : wr >= 45 ? "#eab308" : "#f87171" }}/>
+                            </div>
+                            <span style={{ color:"var(--tp-faint)", fontFamily:"'JetBrains Mono', monospace", textAlign:"right" }}>{wr.toFixed(0)}% ({v.count})</span>
+                            <span style={{ color: v.pnl >= 0 ? "#4ade80" : "#f87171", fontWeight:600, fontFamily:"'JetBrains Mono', monospace", textAlign:"right" }}>{fmt(v.pnl)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── RISK SCORE ANALYSIS ── */}
+              <div style={panel({ marginBottom:16 })}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:16 }}><Shield size={15} color="#a5b4fc"/><span style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)" }}>Risk Score Analysis</span></div>
+                <div style={{ fontSize:11, color:"var(--tp-faint)", marginBottom:14 }}>Based on position risk vs account balance. {totalCapital > 0 ? `Total capital: ${fmt(totalCapital)}` : "Set account balances in Settings for accurate scoring."}</div>
+
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))", gap:10, marginBottom:16 }}>
+                  {perfStats.riskBuckets.map(b => (
+                    <div key={b.label} style={{ background:"var(--tp-card)", borderRadius:10, padding:"14px 16px", textAlign:"center", borderLeft:`3px solid ${b.color}` }}>
+                      <div style={{ fontSize:10, color:b.color, fontWeight:700, textTransform:"uppercase", letterSpacing:0.6, marginBottom:4 }}>{b.label}</div>
+                      <div style={{ fontSize:9, color:"var(--tp-faintest)", marginBottom:8 }}>{b.label === "Conservative" ? "≤1%" : b.label === "Moderate" ? "1-2%" : b.label === "Elevated" ? "2-5%" : ">5%"} of account</div>
+                      <div style={{ fontSize:20, fontWeight:800, color:"var(--tp-text)", fontFamily:"'JetBrains Mono', monospace" }}>{b.count}</div>
+                      <div style={{ fontSize:10, color:"var(--tp-faint)", marginTop:2 }}>trades</div>
+                      {b.count > 0 && <div style={{ marginTop:6, fontSize:11 }}>
+                        <span style={{ color: b.wr >= 50 ? "#4ade80" : "#f87171", fontWeight:600, fontFamily:"'JetBrains Mono', monospace" }}>{b.wr.toFixed(0)}% WR</span>
+                        <span style={{ color:"var(--tp-faintest)", margin:"0 4px" }}>·</span>
+                        <span style={{ color: b.totalPnl >= 0 ? "#4ade80" : "#f87171", fontWeight:600, fontFamily:"'JetBrains Mono', monospace" }}>{fmt(b.totalPnl)}</span>
+                      </div>}
+                    </div>
+                  ))}
+                </div>
+
+                {(() => {
+                  const oversized = perfStats.riskBuckets.find(b => b.label === "Oversized");
+                  const conservative = perfStats.riskBuckets.find(b => b.label === "Conservative");
+                  if (oversized && oversized.count >= 2 && conservative && conservative.count >= 2) {
+                    return (
+                      <div style={{ padding:"10px 14px", background: oversized.wr < conservative.wr ? "rgba(248,113,113,0.06)" : "rgba(74,222,128,0.06)", border: `1px solid ${oversized.wr < conservative.wr ? "rgba(248,113,113,0.15)" : "rgba(74,222,128,0.15)"}`, borderRadius:8, fontSize:12, color:"var(--tp-text2)", marginBottom:12 }}>
+                        {oversized.wr < conservative.wr
+                          ? <span>⚠️ Your <strong style={{ color:"#f87171" }}>oversized</strong> trades have a {oversized.wr.toFixed(0)}% win rate vs {conservative.wr.toFixed(0)}% on <strong style={{ color:"#4ade80" }}>conservative</strong> sizes. Smaller positions = better results.</span>
+                          : <span>✅ Your larger positions are performing well ({oversized.wr.toFixed(0)}% WR), but watch for drawdowns.</span>
+                        }
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
+                <div style={{ fontSize:11, color:"var(--tp-faint)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.6, marginBottom:8 }}>Recent Trades — Risk Scores</div>
+                <div style={{ display:"grid", gap:3, maxHeight:300, overflowY:"auto" }}>
+                  <div style={{ display:"grid", gridTemplateColumns:"70px 1fr 70px 70px 80px", gap:8, padding:"5px 10px", fontSize:9, color:"var(--tp-faintest)", fontWeight:600, textTransform:"uppercase" }}>
+                    <span>Date</span><span>Ticker</span><span style={{ textAlign:"right" }}>Risk %</span><span style={{ textAlign:"center" }}>Score</span><span style={{ textAlign:"right" }}>P&L</span>
+                  </div>
+                  {[...perfStats.scored].filter(t => t.riskPct !== null).sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 20).map((t, i) => (
+                    <div key={t.id || i} style={{ display:"grid", gridTemplateColumns:"70px 1fr 70px 70px 80px", gap:8, padding:"6px 10px", background: i % 2 === 0 ? "var(--tp-card)" : "transparent", borderRadius:4, fontSize:11, alignItems:"center" }}>
+                      <span style={{ color:"var(--tp-faint)", fontFamily:"'JetBrains Mono', monospace", fontSize:10 }}>{(t.date||"").slice(5)}</span>
+                      <span style={{ color:"var(--tp-text2)", fontWeight:600 }}>{t.ticker}</span>
+                      <span style={{ color: t.riskColor, fontWeight:600, fontFamily:"'JetBrains Mono', monospace", textAlign:"right" }}>{t.riskPct.toFixed(1)}%</span>
+                      <span style={{ textAlign:"center" }}><span style={{ fontSize:9, padding:"2px 6px", borderRadius:4, background:`${t.riskColor}15`, color:t.riskColor, fontWeight:600 }}>{t.riskLabel}</span></span>
+                      <span style={{ color: t.pnl >= 0 ? "#4ade80" : "#f87171", fontWeight:600, fontFamily:"'JetBrains Mono', monospace", textAlign:"right" }}>{fmt(t.pnl)}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -7893,7 +8242,7 @@ function TradePulseApp({ user, onSignOut }) {
         {tab==="log" && <TradeLog trades={trades} onEdit={t=>{setEditingTrade(t);setShowTradeModal(true);}} onDelete={handleTradeDelete} theme={theme}/>}
         {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme} wheelTrades={wheelTrades}/>}
       </div>
-      {showTradeModal && <TradeModal onSave={handleTradeSave} onClose={()=>{setShowTradeModal(false);setEditingTrade(null);}} editTrade={editingTrade} futuresSettings={futuresSettings} customFields={customFields} playbooks={playbooks} theme={theme}/>}
+      {showTradeModal && <TradeModal onSave={handleTradeSave} onClose={()=>{setShowTradeModal(false);setEditingTrade(null);}} editTrade={editingTrade} futuresSettings={futuresSettings} customFields={customFields} playbooks={playbooks} theme={theme} accountBalances={accountBalances}/>}
       {showMigration && <MigrationPrompt onMigrate={handleMigrate} onSkip={()=>setShowMigration(false)}/>}
     </div>
   );
