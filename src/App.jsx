@@ -939,7 +939,19 @@ function TradeModal({ onSave, onClose, editTrade, futuresSettings, customFields,
               <label style={{ fontSize:11, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.8, display:"block", marginBottom:5 }}>Playbook</label>
               <select value={trade.playbook || ""} onChange={e=>set("playbook")(e.target.value)} style={{ width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", appearance:"none", cursor:"pointer", boxSizing:"border-box" }}>
                 <option value="" style={{ background:"var(--tp-sel-bg)", color:"var(--tp-faint)" }}>Select setup...</option>
-                {(playbooks || []).map(pb => <option key={pb.id} value={pb.name} style={{ background:"var(--tp-sel-bg)", color:"var(--tp-text)" }}>{pb.name}</option>)}
+                {(playbooks || []).length > 0 && <optgroup label="My Setups" style={{ background:"var(--tp-sel-bg)", color:"var(--tp-faint)", fontWeight:700 }}>
+                  {(playbooks || []).map(pb => <option key={pb.id} value={pb.name} style={{ background:"var(--tp-sel-bg)", color:"var(--tp-text)", fontWeight:400 }}>{pb.name}</option>)}
+                </optgroup>}
+                {(() => {
+                  const myNames = new Set((playbooks || []).map(p => p.name));
+                  const cats = {};
+                  STRATEGY_LIBRARY.forEach(s => { if (!myNames.has(s.name)) { if (!cats[s.category]) cats[s.category] = []; cats[s.category].push(s); } });
+                  return Object.entries(cats).map(([cat, items]) => (
+                    <optgroup key={cat} label={`📚 ${cat}`} style={{ background:"var(--tp-sel-bg)", color:"var(--tp-faint)", fontWeight:700 }}>
+                      {items.map(s => <option key={s.id} value={s.name} style={{ background:"var(--tp-sel-bg)", color:"var(--tp-text)", fontWeight:400 }}>{s.name}</option>)}
+                    </optgroup>
+                  ));
+                })()}
               </select>
             </div>
           </div>
