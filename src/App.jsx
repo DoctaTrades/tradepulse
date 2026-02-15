@@ -2561,6 +2561,75 @@ function Watchlist({ watchlists, onSave, onPromoteTrade }) {
         );
       })}
       {showTickerModal && <TickerModal editItem={editingItem?{...editingItem,_sector:undefined}:null} onSave={handleTickerSave} onClose={()=>{setShowTickerModal(false);setEditingItem(null);setAddingSector(null);}}/>}
+
+      {/* ── WEEKLY NOTES ── */}
+      <div style={{ marginTop:24, background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:14, padding:"18px 20px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
+          <Clipboard size={15} color="#a5b4fc"/>
+          <span style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)" }}>Weekly Notes</span>
+          <span style={{ fontSize:10, color:"var(--tp-faintest)", marginLeft:"auto" }}>Earnings, events, market notes, charts…</span>
+        </div>
+
+        <textarea
+          value={current.weeklyNotes || ""}
+          onChange={e => persistWatchlist({ ...current, weeklyNotes: e.target.value })}
+          placeholder="Jot down earnings dates, FOMC schedule, key levels, market thesis, anything useful for the week…"
+          rows={5}
+          style={{ width:"100%", padding:"12px 14px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:10, color:"var(--tp-text)", fontSize:13, outline:"none", fontFamily:"inherit", resize:"vertical", boxSizing:"border-box", lineHeight:1.7, marginBottom:12 }}
+        />
+
+        {/* Image uploads */}
+        <div style={{ marginBottom:8 }}>
+          <label style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"7px 14px", borderRadius:8, border:"1px solid var(--tp-border-l)", background:"var(--tp-input)", color:"var(--tp-muted)", cursor:"pointer", fontSize:12, fontWeight:500, transition:"border-color 0.15s" }}
+            onMouseEnter={e=>e.currentTarget.style.borderColor="rgba(99,102,241,0.4)"} onMouseLeave={e=>e.currentTarget.style.borderColor="var(--tp-border-l)"}>
+            <Image size={13}/> Add Image
+            <input type="file" accept="image/*" multiple hidden onChange={e => {
+              const files = Array.from(e.target.files || []);
+              if (files.length === 0) return;
+              const existing = current.weeklyImages || [];
+              files.forEach(file => {
+                const reader = new FileReader();
+                reader.onload = ev => {
+                  const img = { id: Date.now() + Math.random(), src: ev.target.result, name: file.name, addedAt: new Date().toISOString() };
+                  persistWatchlist({ ...current, weeklyImages: [...(current.weeklyImages || []), img] });
+                };
+                reader.readAsDataURL(file);
+              });
+              e.target.value = "";
+            }}/>
+          </label>
+        </div>
+
+        {(current.weeklyImages || []).length > 0 && (
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(180px, 1fr))", gap:10, marginTop:8 }}>
+            {(current.weeklyImages || []).map(img => (
+              <div key={img.id} style={{ position:"relative", borderRadius:10, overflow:"hidden", border:"1px solid var(--tp-border-l)", background:"var(--tp-card)" }}>
+                <img
+                  src={img.src}
+                  alt={img.name || "Note image"}
+                  onClick={() => {
+                    const overlay = document.createElement("div");
+                    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:zoom-out;backdrop-filter:blur(4px)";
+                    const fullImg = document.createElement("img");
+                    fullImg.src = img.src;
+                    fullImg.style.cssText = "max-width:90vw;max-height:90vh;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,0.5)";
+                    overlay.appendChild(fullImg);
+                    overlay.onclick = () => document.body.removeChild(overlay);
+                    document.body.appendChild(overlay);
+                  }}
+                  style={{ width:"100%", height:140, objectFit:"cover", cursor:"zoom-in", display:"block" }}
+                />
+                <div style={{ padding:"6px 10px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                  <span style={{ fontSize:10, color:"var(--tp-faint)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>{img.name || "Image"}</span>
+                  <button onClick={() => persistWatchlist({ ...current, weeklyImages: (current.weeklyImages || []).filter(i => i.id !== img.id) })}
+                    style={{ background:"none", border:"none", cursor:"pointer", color:"var(--tp-faint)", padding:2 }}
+                    onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="var(--tp-faint)"}><X size={12}/></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
