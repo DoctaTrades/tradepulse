@@ -8141,6 +8141,7 @@ function TradePulseApp({ user, onSignOut }) {
   const [journal, setJournal] = useState([]);
   const [goals, setGoals] = useState({});
   const [dividends, setDividends] = useState([]);
+  const [prefs, setPrefs] = useState({ theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });
   const cashTransactions = useMemo(() => prefs.cashTransactions || [], [prefs]);
   const setCashTransactions = useCallback(fn => {
     setPrefs(p => {
@@ -8149,7 +8150,6 @@ function TradePulseApp({ user, onSignOut }) {
       return { ...p, cashTransactions: next };
     });
   }, []);
-  const [prefs, setPrefs] = useState({ theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });
   const [tab, setTab] = useState("dashboard");
   const [showTradeModal, setShowTradeModal] = useState(false);
   const [editingTrade, setEditingTrade] = useState(null);
