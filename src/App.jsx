@@ -20,6 +20,7 @@ const PREFS_KEY = "tj-prefs";
 const JOURNAL_KEY = "tj-journal";
 const GOALS_KEY = "tj-goals";
 const DIVIDENDS_KEY = "tj-dividends";
+const CASH_TRANSACTIONS_KEY = "tj-cash-transactions";
 
 // Local storage helpers (used for migration + offline cache)
 function localLoad(key) { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch { return null; } }
@@ -42,6 +43,7 @@ function getLocalData() {
     journal: localLoad(JOURNAL_KEY) || [],
     goals: localLoad(GOALS_KEY) || {},
     dividends: localLoad(DIVIDENDS_KEY) || [],
+    cashTransactions: localLoad(CASH_TRANSACTIONS_KEY) || [],
     prefs: localLoad(PREFS_KEY) || { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] }
   };
 }
@@ -1658,7 +1660,7 @@ function RiskCalculator({ theme, accountBalances, futuresSettings, customFields 
   );
 }
 
-function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, wheelTrades }) {
+function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, wheelTrades, cashTransactions }) {
   const widgetConfig = useMemo(() => {
     if (!dashWidgets || dashWidgets.length === 0) return DEFAULT_DASH_WIDGETS;
     const merged = [];
@@ -1764,6 +1766,13 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       });
       wheelPremium = Math.round(wheelPremium * 100) / 100;
 
+      // Calculate cash deposits/withdrawals for this account
+      let cashNet = 0;
+      (cashTransactions || []).filter(ct => ct.account === name).forEach(ct => {
+        cashNet += ct.type === "deposit" ? (parseFloat(ct.amount) || 0) : -(parseFloat(ct.amount) || 0);
+      });
+      cashNet = Math.round(cashNet * 100) / 100;
+
       const totalPnL = realizedPnL + unrealizedPnL + wheelPremium;
 
       // Manual override takes priority if set
@@ -1771,12 +1780,12 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       const hasOverride = override !== undefined && override !== null && override !== "";
       const overrideVal = hasOverride ? parseFloat(override) : null;
 
-      const currentBal = hasOverride ? overrideVal : start + totalPnL;
-      const returnPct = start > 0 ? ((currentBal - start) / start) * 100 : 0;
+      const currentBal = hasOverride ? overrideVal : start + totalPnL + cashNet;
+      const returnPct = start > 0 ? ((currentBal - start - cashNet) / start) * 100 : 0;
 
-      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, wheelPremium, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal };
+      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, wheelPremium, cashNet, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal };
     });
-  }, [accountBalances, trades, prefs, wheelTrades]);
+  }, [accountBalances, trades, prefs, wheelTrades, cashTransactions]);
 
   // ── Compute Stats ──
   const stats = useMemo(() => {
@@ -1976,7 +1985,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                   <div style={{ textAlign:"right" }}>
                     <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2 }}>P&L</div>
                     <div style={{ fontSize:13, fontWeight:600, color: acct.totalPnL >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fmt(acct.totalPnL)}</div>
-                    {(acct.unrealizedPnL !== 0 || acct.wheelPremium !== 0) && !acct.hasOverride && (
+                    {(acct.unrealizedPnL !== 0 || acct.wheelPremium !== 0 || acct.cashNet !== 0) && !acct.hasOverride && !prefs.compactBalances && (
                       <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>
                         <span style={{ color: acct.realizedPnL >= 0 ? "rgba(74,222,128,0.6)" : "rgba(248,113,113,0.6)" }}>R: {fmt(acct.realizedPnL)}</span>
                         {acct.unrealizedPnL !== 0 && <>
@@ -1986,6 +1995,10 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                         {acct.wheelPremium !== 0 && <>
                           {" · "}
                           <span style={{ color:"rgba(167,139,250,0.7)" }}>W: {fmt(acct.wheelPremium)}</span>
+                        </>}
+                        {acct.cashNet !== 0 && <>
+                          {" · "}
+                          <span style={{ color:"rgba(234,179,8,0.7)" }}>C: {fmt(acct.cashNet)}</span>
                         </>}
                       </div>
                     )}
@@ -6566,7 +6579,7 @@ function SetupGuide() {
   );
 }
 
-function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCustomFields, accountBalances, onSaveAccountBalances, trades, onSaveTrades, prefs, onSavePrefs, theme, wheelTrades }) {
+function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCustomFields, accountBalances, onSaveAccountBalances, trades, onSaveTrades, prefs, onSavePrefs, theme, wheelTrades, cashTransactions, onSaveCashTransactions }) {
   const [section, setSection] = useState("accounts"); // accounts | appearance | futures | custom | importexport | ai
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingPreset, setEditingPreset] = useState(null);
@@ -6596,7 +6609,7 @@ function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCusto
         <button onClick={()=>setSection("ai")} style={{ padding:"8px 16px", border:"none", background:section==="ai"?"rgba(99,102,241,0.15)":"transparent", color:section==="ai"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="ai"?"2px solid #6366f1":"none", whiteSpace:"nowrap", flexShrink:0 }}>AI Integration</button>
       </div>
 
-      {section === "accounts" && <AccountBalancesManager accountBalances={accountBalances} onSave={onSaveAccountBalances} customFields={customFields} trades={trades} prefs={prefs} onSavePrefs={onSavePrefs} wheelTrades={wheelTrades}/>}
+      {section === "accounts" && <AccountBalancesManager accountBalances={accountBalances} onSave={onSaveAccountBalances} customFields={customFields} trades={trades} prefs={prefs} onSavePrefs={onSavePrefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} onSaveCashTransactions={onSaveCashTransactions}/>}
 
       {section === "futures" && (
         <div>
@@ -7693,12 +7706,14 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
 }
 
 // ─── ACCOUNT BALANCES MANAGER ────────────────────────────────────────────────
-function AccountBalancesManager({ accountBalances, onSave, customFields, trades, prefs, onSavePrefs, wheelTrades }) {
+function AccountBalancesManager({ accountBalances, onSave, customFields, trades, prefs, onSavePrefs, wheelTrades, cashTransactions, onSaveCashTransactions }) {
   const [addingAccount, setAddingAccount] = useState(false);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountBalance, setNewAccountBalance] = useState("");
   const [editingAccount, setEditingAccount] = useState(null);
   const [editValue, setEditValue] = useState("");
+  const [showCashForm, setShowCashForm] = useState(false);
+  const [cashForm, setCashForm] = useState({ account: "", type: "deposit", amount: "", note: "", date: new Date().toISOString().split("T")[0] });
 
   const accounts = customFields.accounts || [];
   const allAccountNames = [...new Set([...accounts, ...Object.keys(accountBalances)])];
@@ -7890,6 +7905,98 @@ function AccountBalancesManager({ accountBalances, onSave, customFields, trades,
           </div>
         </div>
       )}
+
+      {/* ── Cash Deposits & Withdrawals ── */}
+      {accountsWithBalances.length > 0 && (
+        <div style={{ marginTop:24 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+            <div>
+              <div style={{ fontSize:16, fontWeight:600, color:"var(--tp-text)", marginBottom:4 }}>Cash Deposits & Withdrawals</div>
+              <div style={{ fontSize:12, color:"var(--tp-faint)", lineHeight:1.6 }}>Log deposits or withdrawals to adjust account balances. These are factored into your current balance but excluded from P&L return calculations.</div>
+            </div>
+            <button onClick={()=>{setShowCashForm(true);setCashForm(f=>({...f, account:accountsWithBalances[0]||"", date:new Date().toISOString().split("T")[0]}));}} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#eab308,#f59e0b)", color:"#000", cursor:"pointer", fontSize:12, fontWeight:600 }}><Plus size={13}/> Add Transaction</button>
+          </div>
+
+          {showCashForm && (
+            <div style={{ background:"rgba(30,32,38,0.9)", border:"1px solid rgba(234,179,8,0.25)", borderRadius:10, padding:"16px 18px", marginTop:12, marginBottom:16 }}>
+              <div style={{ fontSize:12, color:"#eab308", fontWeight:600, marginBottom:12 }}>New Cash Transaction</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:10, marginBottom:10 }}>
+                <div>
+                  <label style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, display:"block", marginBottom:4 }}>Account</label>
+                  <select value={cashForm.account} onChange={e=>setCashForm(f=>({...f,account:e.target.value}))} style={{ width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", appearance:"none", cursor:"pointer", boxSizing:"border-box" }}>
+                    {accountsWithBalances.map(a=><option key={a} value={a}>{a}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, display:"block", marginBottom:4 }}>Type</label>
+                  <select value={cashForm.type} onChange={e=>setCashForm(f=>({...f,type:e.target.value}))} style={{ width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:cashForm.type==="deposit"?"#4ade80":"#f87171", fontSize:13, outline:"none", appearance:"none", cursor:"pointer", boxSizing:"border-box" }}>
+                    <option value="deposit">Deposit</option>
+                    <option value="withdrawal">Withdrawal</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, display:"block", marginBottom:4 }}>Amount ($)</label>
+                  <input type="number" value={cashForm.amount} onChange={e=>setCashForm(f=>({...f,amount:e.target.value}))} placeholder="0.00" style={{ width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", fontFamily:"'JetBrains Mono', monospace", boxSizing:"border-box" }}/>
+                </div>
+                <div>
+                  <label style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, display:"block", marginBottom:4 }}>Date</label>
+                  <input type="date" value={cashForm.date} onChange={e=>setCashForm(f=>({...f,date:e.target.value}))} style={{ width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", boxSizing:"border-box" }}/>
+                </div>
+              </div>
+              <div style={{ display:"flex", gap:10, alignItems:"end" }}>
+                <div style={{ flex:1 }}>
+                  <label style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, display:"block", marginBottom:4 }}>Note (optional)</label>
+                  <input value={cashForm.note} onChange={e=>setCashForm(f=>({...f,note:e.target.value}))} placeholder="e.g. Monthly funding, Transfer from savings" style={{ width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", boxSizing:"border-box" }}/>
+                </div>
+                <button onClick={()=>{
+                  const amt = parseFloat(cashForm.amount);
+                  if (!cashForm.account || isNaN(amt) || amt <= 0) return;
+                  const tx = { id: Date.now() + Math.random(), ...cashForm, amount: String(amt) };
+                  onSaveCashTransactions(prev => [...prev, tx]);
+                  setCashForm({ account: cashForm.account, type: "deposit", amount: "", note: "", date: new Date().toISOString().split("T")[0] });
+                  setShowCashForm(false);
+                }} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#eab308", color:"#000", cursor:"pointer", fontSize:13, fontWeight:600, whiteSpace:"nowrap" }}>Save</button>
+                <button onClick={()=>setShowCashForm(false)} style={{ background:"none", border:"none", color:"var(--tp-faint)", cursor:"pointer", padding:4 }}><X size={18}/></button>
+              </div>
+            </div>
+          )}
+
+          {/* Transaction history */}
+          {(cashTransactions || []).length > 0 && (
+            <div style={{ marginTop:12 }}>
+              <div style={{ display:"grid", gap:4 }}>
+                {[...(cashTransactions || [])].sort((a,b) => new Date(b.date) - new Date(a.date)).map(tx => (
+                  <div key={tx.id} style={{ display:"grid", gridTemplateColumns:"90px 110px 80px 1fr 24px", gap:10, padding:"8px 14px", background:"var(--tp-card)", borderRadius:8, alignItems:"center", fontSize:12 }}>
+                    <span style={{ color:"var(--tp-faint)", fontFamily:"'JetBrains Mono', monospace" }}>{tx.date?.slice(5)}</span>
+                    <span style={{ fontWeight:600, color:"var(--tp-text)" }}>{tx.account}</span>
+                    <span style={{ fontWeight:700, fontFamily:"'JetBrains Mono', monospace", color: tx.type === "deposit" ? "#4ade80" : "#f87171" }}>
+                      {tx.type === "deposit" ? "+" : "−"}${parseFloat(tx.amount).toLocaleString("en-US",{minimumFractionDigits:2})}
+                    </span>
+                    <span style={{ color:"var(--tp-faintest)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{tx.note || "—"}</span>
+                    <button onClick={()=>onSaveCashTransactions(prev=>prev.filter(t=>t.id!==tx.id))} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--tp-faint)", padding:0 }} onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="#5c6070"}><X size={12}/></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Dashboard Display Toggle ── */}
+      <div style={{ marginTop:24, background:"rgba(99,102,241,0.04)", border:"1px solid rgba(99,102,241,0.12)", borderRadius:12, padding:"18px 20px" }}>
+        <div style={{ fontSize:16, fontWeight:600, color:"var(--tp-text)", marginBottom:4 }}>Dashboard Balance Display</div>
+        <div style={{ fontSize:12, color:"var(--tp-faint)", marginBottom:14, lineHeight:1.6 }}>Control how account balances are shown on the Dashboard.</div>
+        <div style={{ display:"flex", gap:10 }}>
+          <button onClick={()=>onSavePrefs(p=>({...p, compactBalances:false}))} style={{ flex:1, padding:"14px 16px", borderRadius:10, border:`2px solid ${!prefs.compactBalances ? "#6366f1" : "var(--tp-border-l)"}`, background:!prefs.compactBalances ? "rgba(99,102,241,0.08)" : "var(--tp-card)", cursor:"pointer", textAlign:"left" }}>
+            <div style={{ fontSize:13, fontWeight:600, color:!prefs.compactBalances?"#a5b4fc":"var(--tp-muted)", marginBottom:4 }}>Detailed Breakdown</div>
+            <div style={{ fontSize:11, color:"var(--tp-faint)", lineHeight:1.5 }}>Show Realized, Unrealized, Wheel, and Cash separately under each account balance</div>
+          </button>
+          <button onClick={()=>onSavePrefs(p=>({...p, compactBalances:true}))} style={{ flex:1, padding:"14px 16px", borderRadius:10, border:`2px solid ${prefs.compactBalances ? "#6366f1" : "var(--tp-border-l)"}`, background:prefs.compactBalances ? "rgba(99,102,241,0.08)" : "var(--tp-card)", cursor:"pointer", textAlign:"left" }}>
+            <div style={{ fontSize:13, fontWeight:600, color:prefs.compactBalances?"#a5b4fc":"var(--tp-muted)", marginBottom:4 }}>Summary Only</div>
+            <div style={{ fontSize:11, color:"var(--tp-faint)", lineHeight:1.5 }}>Show just the total account balance — clean and simple</div>
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -8034,6 +8141,7 @@ function TradePulseApp({ user, onSignOut }) {
   const [journal, setJournal] = useState([]);
   const [goals, setGoals] = useState({});
   const [dividends, setDividends] = useState([]);
+  const [cashTransactions, setCashTransactions] = useState([]);
   const [prefs, setPrefs] = useState({ theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });
   const [tab, setTab] = useState("dashboard");
   const [showTradeModal, setShowTradeModal] = useState(false);
@@ -8161,6 +8269,7 @@ function TradePulseApp({ user, onSignOut }) {
         setJournal(Array.isArray(cloud.journal) ? cloud.journal : []);
         setGoals(cloud.goals && typeof cloud.goals === "object" && !Array.isArray(cloud.goals) ? cloud.goals : {});
         setDividends(Array.isArray(cloud.dividends) ? cloud.dividends : []);
+        setCashTransactions(Array.isArray(cloud.cash_transactions) ? cloud.cash_transactions : []);
         const pr = cloud.prefs;
         setPrefs(pr && typeof pr === "object" && !Array.isArray(pr) ? { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [], ...pr } : { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });
       }
@@ -8172,7 +8281,7 @@ function TradePulseApp({ user, onSignOut }) {
         setTrades(local.trades); setWatchlists(local.watchlists); setWheelTrades(local.wheel_trades);
         setFuturesSettings(local.futures_settings); setCustomFields(local.custom_fields && Object.keys(local.custom_fields).length > 0 ? local.custom_fields : DEFAULT_CUSTOM_FIELDS);
         setAccountBalances(local.account_balances); setPlaybooks(local.playbooks); setJournal(local.journal);
-        setGoals(local.goals); setDividends(local.dividends); setPrefs(local.prefs);
+        setGoals(local.goals); setDividends(local.dividends); setCashTransactions(local.cashTransactions || []); setPrefs(local.prefs);
       }
       setLoaded(true);
     })();
@@ -8190,7 +8299,7 @@ function TradePulseApp({ user, onSignOut }) {
   const debouncedCloudSave = useCallback((field, value) => {
     if (!user || !loaded) return;
     // Also save locally as cache
-    const keyMap = { trades: STORAGE_KEY, watchlists: WATCHLIST_KEY, wheel_trades: WHEEL_KEY, futures_settings: FUTURES_SETTINGS_KEY, custom_fields: CUSTOM_FIELDS_KEY, account_balances: ACCOUNT_BALANCES_KEY, playbooks: PLAYBOOK_KEY, journal: JOURNAL_KEY, goals: GOALS_KEY, dividends: DIVIDENDS_KEY, prefs: PREFS_KEY };
+    const keyMap = { trades: STORAGE_KEY, watchlists: WATCHLIST_KEY, wheel_trades: WHEEL_KEY, futures_settings: FUTURES_SETTINGS_KEY, custom_fields: CUSTOM_FIELDS_KEY, account_balances: ACCOUNT_BALANCES_KEY, playbooks: PLAYBOOK_KEY, journal: JOURNAL_KEY, goals: GOALS_KEY, dividends: DIVIDENDS_KEY, cash_transactions: CASH_TRANSACTIONS_KEY, prefs: PREFS_KEY };
     if (keyMap[field]) localSave(keyMap[field], value);
     // Debounce cloud save (500ms)
     clearTimeout(saveTimeout[field]);
@@ -8212,6 +8321,7 @@ function TradePulseApp({ user, onSignOut }) {
   useEffect(() => { debouncedCloudSave("journal", journal); }, [journal]);
   useEffect(() => { debouncedCloudSave("goals", goals); }, [goals]);
   useEffect(() => { debouncedCloudSave("dividends", dividends); }, [dividends]);
+  useEffect(() => { debouncedCloudSave("cash_transactions", cashTransactions); }, [cashTransactions]);
   useEffect(() => { debouncedCloudSave("prefs", prefs); }, [prefs]);
 
   const handleTradeSave = useCallback(trade => {
@@ -8295,7 +8405,7 @@ function TradePulseApp({ user, onSignOut }) {
       </>}
 
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} wheelTrades={wheelTrades}/>}
+        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
         {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]}/>}
         {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} onStartWheel={(ticker, account, shares, avgPrice) => {
@@ -8309,7 +8419,7 @@ function TradePulseApp({ user, onSignOut }) {
         {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} trades={trades}/>}
         {tab==="watchlist" && <Watchlist watchlists={watchlists} onSave={setWatchlists} onPromoteTrade={promoteTrade} theme={theme}/>}
         {tab==="log" && <TradeLog trades={trades} onEdit={t=>{setEditingTrade(t);setShowTradeModal(true);}} onDelete={handleTradeDelete} theme={theme}/>}
-        {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme} wheelTrades={wheelTrades}/>}
+        {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme} wheelTrades={wheelTrades} cashTransactions={cashTransactions} onSaveCashTransactions={setCashTransactions}/>}
       </div>
       {showTradeModal && <TradeModal onSave={handleTradeSave} onClose={()=>{setShowTradeModal(false);setEditingTrade(null);}} editTrade={editingTrade} futuresSettings={futuresSettings} customFields={customFields} playbooks={playbooks} theme={theme} accountBalances={accountBalances}/>}
       {showMigration && <MigrationPrompt onMigrate={handleMigrate} onSkip={()=>setShowMigration(false)}/>}
