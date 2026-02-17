@@ -8141,7 +8141,14 @@ function TradePulseApp({ user, onSignOut }) {
   const [journal, setJournal] = useState([]);
   const [goals, setGoals] = useState({});
   const [dividends, setDividends] = useState([]);
-  const [cashTransactions, setCashTransactions] = useState([]);
+  const cashTransactions = useMemo(() => prefs.cashTransactions || [], [prefs]);
+  const setCashTransactions = useCallback(fn => {
+    setPrefs(p => {
+      const prev = p.cashTransactions || [];
+      const next = typeof fn === "function" ? fn(prev) : fn;
+      return { ...p, cashTransactions: next };
+    });
+  }, []);
   const [prefs, setPrefs] = useState({ theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });
   const [tab, setTab] = useState("dashboard");
   const [showTradeModal, setShowTradeModal] = useState(false);
@@ -8269,9 +8276,14 @@ function TradePulseApp({ user, onSignOut }) {
         setJournal(Array.isArray(cloud.journal) ? cloud.journal : []);
         setGoals(cloud.goals && typeof cloud.goals === "object" && !Array.isArray(cloud.goals) ? cloud.goals : {});
         setDividends(Array.isArray(cloud.dividends) ? cloud.dividends : []);
-        setCashTransactions(Array.isArray(cloud.cash_transactions) ? cloud.cash_transactions : []);
         const pr = cloud.prefs;
-        setPrefs(pr && typeof pr === "object" && !Array.isArray(pr) ? { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [], ...pr } : { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] });
+        const loadedPrefs = pr && typeof pr === "object" && !Array.isArray(pr) ? { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [], ...pr } : { theme: "dark", logo: "", banner: "", tabOrder: [], dashWidgets: [] };
+        // Migrate any locally saved cash transactions into prefs
+        if (!loadedPrefs.cashTransactions || loadedPrefs.cashTransactions.length === 0) {
+          const localCash = localLoad(CASH_TRANSACTIONS_KEY);
+          if (Array.isArray(localCash) && localCash.length > 0) loadedPrefs.cashTransactions = localCash;
+        }
+        setPrefs(loadedPrefs);
       }
       // Check for local data to migrate (only if cloud is empty or doesn't exist)
       if (!cloud && hasLocalData()) {
@@ -8281,7 +8293,7 @@ function TradePulseApp({ user, onSignOut }) {
         setTrades(local.trades); setWatchlists(local.watchlists); setWheelTrades(local.wheel_trades);
         setFuturesSettings(local.futures_settings); setCustomFields(local.custom_fields && Object.keys(local.custom_fields).length > 0 ? local.custom_fields : DEFAULT_CUSTOM_FIELDS);
         setAccountBalances(local.account_balances); setPlaybooks(local.playbooks); setJournal(local.journal);
-        setGoals(local.goals); setDividends(local.dividends); setCashTransactions(local.cashTransactions || []); setPrefs(local.prefs);
+        setGoals(local.goals); setDividends(local.dividends); setPrefs(local.prefs);
       }
       setLoaded(true);
     })();
@@ -8321,7 +8333,6 @@ function TradePulseApp({ user, onSignOut }) {
   useEffect(() => { debouncedCloudSave("journal", journal); }, [journal]);
   useEffect(() => { debouncedCloudSave("goals", goals); }, [goals]);
   useEffect(() => { debouncedCloudSave("dividends", dividends); }, [dividends]);
-  useEffect(() => { debouncedCloudSave("cash_transactions", cashTransactions); }, [cashTransactions]);
   useEffect(() => { debouncedCloudSave("prefs", prefs); }, [prefs]);
 
   const handleTradeSave = useCallback(trade => {
