@@ -273,7 +273,7 @@ function getWeekStart(date = new Date()) { const d = new Date(date); const day =
 function formatWeekLabel(ws) { const d = new Date(ws + "T12:00:00"); const e = new Date(d); e.setDate(e.getDate()+4); const o = {month:"short",day:"numeric"}; return `Week of ${d.toLocaleDateString("en-US",o)} – ${e.toLocaleDateString("en-US",o)}`; }
 
 // ─── LEG HELPERS ──────────────────────────────────────────────────────────────
-const emptyLeg = (action = "Buy", type = "Call") => ({ id: Date.now() + Math.random(), action, type, strike: "", expiration: "", contracts: "1", entryPremium: "", exitPremium: "", rolls: [] });
+const emptyLeg = (action = "Buy", type = "Call") => ({ id: Date.now() + Math.random(), action, type, strike: "", expiration: "", contracts: "1", entryPremium: "", exitPremium: "", partialCloses: [], rolls: [] });
 const emptyRoll = () => ({ id: Date.now() + Math.random(), date: new Date().toISOString().split("T")[0], sellPremium: "", buybackPremium: "" });
 
 function defaultLegs(strategyType) {
@@ -301,14 +301,27 @@ function calcPnL(trade) {
     let total = 0; let hasData = false;
     for (const leg of trade.legs) {
       const entry = parseFloat(leg.entryPremium);
-      const exit = parseFloat(leg.exitPremium);
       const contracts = parseInt(leg.contracts) || 1;
+      const partials = leg.partialCloses || [];
+      const sign = leg.action === "Buy" ? 1 : -1;
       
-      // Base entry/exit P&L
-      if (!isNaN(entry) && !isNaN(exit)) {
+      if (partials.length > 0 && !isNaN(entry)) {
+        // Use partial closes for P&L
         hasData = true;
-        const sign = leg.action === "Buy" ? 1 : -1;
-        total += sign * (exit - entry) * contracts * 100;
+        partials.forEach(pc => {
+          const pcQty = parseInt(pc.qty) || 1;
+          const pcExit = parseFloat(pc.exitPremium);
+          if (!isNaN(pcExit)) {
+            total += sign * (pcExit - entry) * pcQty * 100;
+          }
+        });
+      } else {
+        // Fallback: single exitPremium (backward compatible)
+        const exit = parseFloat(leg.exitPremium);
+        if (!isNaN(entry) && !isNaN(exit)) {
+          hasData = true;
+          total += sign * (exit - entry) * contracts * 100;
+        }
       }
       
       // Add roll credits for short legs
@@ -317,7 +330,9 @@ function calcPnL(trade) {
         leg.rolls.forEach(roll => {
           const sell = parseFloat(roll.sellPremium) || 0;
           const buyback = parseFloat(roll.buybackPremium) || 0;
-          total += (sell - buyback) * contracts * 100;
+          // Rolls apply per-contract for remaining open contracts at time of roll
+          const rollQty = parseInt(roll.contracts) || contracts;
+          total += (sell - buyback) * rollQty * 100;
         });
       }
     }
@@ -503,6 +518,8 @@ function RiskRewardPanel({ trade }) {
 // ─── OPTIONS LEG ROW ──────────────────────────────────────────────────────────
 function LegRow({ leg, index, onChange, onRemove, showRemove, locked, showRolls }) {
   const [showRollHistory, setShowRollHistory] = useState(false);
+  const [showPartialCloses, setShowPartialCloses] = useState(false);
+  const [newClose, setNewClose] = useState({ qty: "1", exitPremium: "", date: new Date().toISOString().split("T")[0] });
   const set = k => v => onChange(index, { ...leg, [k]: v });
   
   const addRoll = () => {
@@ -526,6 +543,39 @@ function LegRow({ leg, index, onChange, onRemove, showRemove, locked, showRolls 
     const buyback = parseFloat(roll.buybackPremium) || 0;
     return sum + (sell - buyback);
   }, 0);
+
+  // Partial close helpers
+  const partials = leg.partialCloses || [];
+  const totalContracts = parseInt(leg.contracts) || 1;
+  const closedQty = partials.reduce((s, pc) => s + (parseInt(pc.qty) || 0), 0);
+  const remainingQty = totalContracts - closedQty;
+  const hasPartials = partials.length > 0;
+  const entryP = parseFloat(leg.entryPremium) || 0;
+  const sign = leg.action === "Buy" ? 1 : -1;
+  const partialPnl = partials.reduce((s, pc) => {
+    const exit = parseFloat(pc.exitPremium) || 0;
+    return s + sign * (exit - entryP) * (parseInt(pc.qty) || 1) * 100;
+  }, 0);
+
+  const addPartialClose = () => {
+    const qty = parseInt(newClose.qty) || 1;
+    const exit = parseFloat(newClose.exitPremium);
+    if (isNaN(exit) || qty <= 0 || qty > remainingQty) return;
+    const pc = { id: Date.now() + Math.random(), qty: String(qty), exitPremium: newClose.exitPremium, date: newClose.date };
+    onChange(index, { ...leg, partialCloses: [...partials, pc] });
+    setNewClose({ qty: String(Math.min(remainingQty - qty, remainingQty)), exitPremium: "", date: new Date().toISOString().split("T")[0] });
+    // Also update the legacy exitPremium to weighted avg for backward compat
+    const allCloses = [...partials, pc];
+    const totalClosedQty = allCloses.reduce((s, p) => s + (parseInt(p.qty) || 0), 0);
+    if (totalClosedQty === totalContracts) {
+      const weightedExit = allCloses.reduce((s, p) => s + (parseFloat(p.exitPremium) || 0) * (parseInt(p.qty) || 1), 0) / totalClosedQty;
+      onChange(index, { ...leg, partialCloses: [...partials, pc], exitPremium: String(weightedExit.toFixed(2)) });
+    }
+  };
+
+  const removePartialClose = (pcId) => {
+    onChange(index, { ...leg, partialCloses: partials.filter(pc => pc.id !== pcId), exitPremium: "" });
+  };
   
   return (
     <div style={{ marginBottom:6 }}>
@@ -562,16 +612,77 @@ function LegRow({ leg, index, onChange, onRemove, showRemove, locked, showRolls 
           {index === 0 && <label style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.5, display:"block", marginBottom:3 }}>Entry $</label>}
           <input type="number" value={leg.entryPremium} onChange={e=>set("entryPremium")(e.target.value)} placeholder="0.00" style={{ width:"100%", padding:"7px 8px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:6, color:"var(--tp-text)", fontSize:12, outline:"none", boxSizing:"border-box" }}/>
         </div>
-        {/* Exit $ */}
+        {/* Exit $ — partial close or single */}
         <div>
           {index === 0 && <label style={{ fontSize:9, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.5, display:"block", marginBottom:3 }}>Exit $</label>}
-          <input type="number" value={leg.exitPremium} onChange={e=>set("exitPremium")(e.target.value)} placeholder="0.00" style={{ width:"100%", padding:"7px 8px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:6, color:"var(--tp-text)", fontSize:12, outline:"none", boxSizing:"border-box" }}/>
+          {!hasPartials ? (
+            <input type="number" value={leg.exitPremium} onChange={e=>set("exitPremium")(e.target.value)} placeholder="0.00" style={{ width:"100%", padding:"7px 8px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:6, color:"var(--tp-text)", fontSize:12, outline:"none", boxSizing:"border-box" }}/>
+          ) : (
+            <button onClick={()=>setShowPartialCloses(!showPartialCloses)} style={{ width:"100%", padding:"7px 8px", background: remainingQty === 0 ? "rgba(74,222,128,0.1)" : "rgba(234,179,8,0.1)", border:`1px solid ${remainingQty === 0 ? "rgba(74,222,128,0.25)" : "rgba(234,179,8,0.25)"}`, borderRadius:6, color: remainingQty === 0 ? "#4ade80" : "#eab308", fontSize:10, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+              {remainingQty === 0 ? "Closed" : `${closedQty}/${totalContracts}`}
+            </button>
+          )}
         </div>
         {/* Remove btn */}
         <div style={{ alignSelf:"center" }}>
           {showRemove && <button onClick={()=>onRemove(index)} style={{ background:"none", border:"none", color:"var(--tp-faint)", cursor:"pointer", padding:2 }} onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="#5c6070"}><X size={14}/></button>}
         </div>
       </div>
+
+      {/* Partial Closes Panel */}
+      {(hasPartials || showPartialCloses) && (
+        <div style={{ marginTop:6, marginLeft:32, background:"rgba(99,102,241,0.05)", border:"1px solid rgba(99,102,241,0.15)", borderRadius:8, padding:"10px 12px" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:11, color:"#a5b4fc", fontWeight:600, textTransform:"uppercase", letterSpacing:0.8 }}>Partial Closes</span>
+              <span style={{ fontSize:10, color:"var(--tp-faint)" }}>{closedQty}/{totalContracts} closed</span>
+              {partialPnl !== 0 && <span style={{ fontSize:11, color: partialPnl >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace", fontWeight:600 }}>{partialPnl >= 0 ? "+" : ""}${partialPnl.toFixed(2)}</span>}
+            </div>
+          </div>
+
+          {/* Existing closes */}
+          {partials.map(pc => (
+            <div key={pc.id} style={{ display:"grid", gridTemplateColumns:"50px 70px 70px 1fr 20px", gap:6, padding:"6px 8px", background:"var(--tp-card)", borderRadius:6, marginBottom:4, alignItems:"center", fontSize:11 }}>
+              <span style={{ color:"var(--tp-faint)", fontFamily:"'JetBrains Mono', monospace" }}>{pc.date?.slice(5) || "—"}</span>
+              <span style={{ color:"var(--tp-text2)", fontWeight:600 }}>{pc.qty} ct{parseInt(pc.qty)!==1?"s":""}</span>
+              <span style={{ color:"#a5b4fc", fontFamily:"'JetBrains Mono', monospace" }}>@ ${parseFloat(pc.exitPremium).toFixed(2)}</span>
+              <span style={{ color: (sign * (parseFloat(pc.exitPremium) - entryP)) >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace", fontWeight:600 }}>
+                {((sign * (parseFloat(pc.exitPremium) - entryP)) >= 0 ? "+" : "")}${(sign * (parseFloat(pc.exitPremium) - entryP) * (parseInt(pc.qty)||1) * 100).toFixed(2)}
+              </span>
+              <button onClick={()=>removePartialClose(pc.id)} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--tp-faint)", padding:0 }} onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="#5c6070"}><X size={10}/></button>
+            </div>
+          ))}
+
+          {/* Add new partial close */}
+          {remainingQty > 0 && (
+            <div style={{ display:"grid", gridTemplateColumns:"60px 80px 80px auto", gap:6, marginTop:6, alignItems:"end" }}>
+              <div>
+                <label style={{ fontSize:8, color:"var(--tp-faintest)", display:"block", marginBottom:2 }}>QTY</label>
+                <input type="number" value={newClose.qty} onChange={e=>setNewClose(p=>({...p,qty:e.target.value}))} min="1" max={remainingQty} placeholder="1" style={{ width:"100%", padding:"6px 8px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:5, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box", fontFamily:"'JetBrains Mono', monospace" }}/>
+              </div>
+              <div>
+                <label style={{ fontSize:8, color:"var(--tp-faintest)", display:"block", marginBottom:2 }}>CLOSE $</label>
+                <input type="number" value={newClose.exitPremium} onChange={e=>setNewClose(p=>({...p,exitPremium:e.target.value}))} placeholder="0.00" style={{ width:"100%", padding:"6px 8px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:5, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box", fontFamily:"'JetBrains Mono', monospace" }}/>
+              </div>
+              <div>
+                <label style={{ fontSize:8, color:"var(--tp-faintest)", display:"block", marginBottom:2 }}>DATE</label>
+                <input type="date" value={newClose.date} onChange={e=>setNewClose(p=>({...p,date:e.target.value}))} style={{ width:"100%", padding:"6px 8px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:5, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box" }}/>
+              </div>
+              <button onClick={addPartialClose} style={{ padding:"6px 12px", borderRadius:5, border:"none", background:"#6366f1", color:"#fff", cursor:"pointer", fontSize:10, fontWeight:600, whiteSpace:"nowrap", alignSelf:"end" }}>Close {newClose.qty || 1}</button>
+            </div>
+          )}
+          {remainingQty === 0 && <div style={{ fontSize:10, color:"#4ade80", fontWeight:600, marginTop:4 }}>✓ All {totalContracts} contract{totalContracts!==1?"s":""} closed</div>}
+        </div>
+      )}
+
+      {/* Scale out button - shows when >1 contracts and no partials yet */}
+      {totalContracts > 1 && !hasPartials && !showPartialCloses && (
+        <div style={{ marginTop:4, marginLeft:32 }}>
+          <button onClick={()=>setShowPartialCloses(true)} style={{ fontSize:9, color:"#a5b4fc", background:"rgba(99,102,241,0.08)", border:"1px solid rgba(99,102,241,0.2)", borderRadius:4, padding:"3px 8px", cursor:"pointer", fontWeight:500 }}>
+            ↳ Scale out ({totalContracts} contracts)
+          </button>
+        </div>
+      )}
       
       {/* Roll tracking for short legs in diagonal/calendar spreads */}
       {showRolls && leg.action === "Sell" && (
@@ -2396,9 +2507,11 @@ function TradeLog({ trades, onEdit, onDelete }) {
             const p = parseFloat(l.exitPremium) || 0;
             return s + (l.action === "Sell" ? -p : p);
           }, 0);
-          const hasExit = t.legs.some(l => l.exitPremium && parseFloat(l.exitPremium) > 0);
+          const hasExit = t.legs.some(l => (l.partialCloses && l.partialCloses.length > 0) || (l.exitPremium && parseFloat(l.exitPremium) > 0));
+          const totalClosed = t.legs.reduce((s, l) => s + (l.partialCloses || []).reduce((s2, pc) => s2 + (parseInt(pc.qty) || 0), 0), 0);
+          const totalOpen = totalContracts - totalClosed;
           entryDisp = netEntry !== 0 ? `$${Math.abs(netEntry).toFixed(2)}` : (t.entryPrice || "—");
-          exitDisp = hasExit ? `$${Math.abs(netExit).toFixed(2)}` : (t.exitPrice || "—");
+          exitDisp = hasExit ? (totalOpen > 0 ? `${totalClosed}/${totalContracts}` : `$${Math.abs(netExit).toFixed(2)}`) : (t.exitPrice || "—");
           qtyDisp = isMultiLeg ? `${totalContracts}×${t.legs.length}L` : `${totalContracts}`;
         } else {
           entryDisp = t.entryPrice || "—";
