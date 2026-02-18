@@ -4012,7 +4012,7 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
 
     // Source 3: Gemini AI as last resort (uses training knowledge)
     try {
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${prefs?.geminiApiKey || GEMINI_FREE_KEY}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -5641,7 +5641,7 @@ function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }
 // ─── AI TRADE COACH ─────────────────────────────────────────────────────────
 const COACH_DAILY_LIMIT = 10;
 const GEMINI_MODEL = "gemini-2.5-flash";
-const GEMINI_FREE_KEY = "AIzaSyB4AaSl43an7_Gz_Iu8JSec1xF_P4mSrsc";
+const GEMINI_FREE_KEY = "";
 
 function AICoach({ trades, accountBalances, journal, goals, playbooks, prefs }) {
   const [mode, setMode] = useState(null);
@@ -5785,7 +5785,7 @@ function AICoach({ trades, accountBalances, journal, goals, playbooks, prefs }) 
 
   // ── Call Gemini API ──
   const callGemini = async (prompt) => {
-    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_FREE_KEY}`, {
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${prefs?.geminiApiKey || GEMINI_FREE_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -6776,8 +6776,8 @@ function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCusto
               {/* Gemini option */}
               <button onClick={()=>onSavePrefs(p=>({...p, aiProvider:"gemini"}))} style={{ padding:"16px", borderRadius:12, border:`2px solid ${(!prefs.aiProvider || prefs.aiProvider==="gemini") ? "#4ade80" : "var(--tp-border-l)"}`, background:(!prefs.aiProvider || prefs.aiProvider==="gemini")?"rgba(74,222,128,0.06)":"var(--tp-card)", cursor:"pointer", textAlign:"left" }}>
                 <div style={{ fontSize:14, fontWeight:700, color:"var(--tp-text)", marginBottom:4 }}>Gemini Flash</div>
-                <div style={{ fontSize:11, color:"#4ade80", fontWeight:600, marginBottom:6 }}>Free</div>
-                <div style={{ fontSize:11, color:"var(--tp-faint)", lineHeight:1.5 }}>Good analysis of trade stats, setup performance, and basic pattern detection. No setup required.</div>
+                <div style={{ fontSize:11, color:"#4ade80", fontWeight:600, marginBottom:6 }}>Free API Key</div>
+                <div style={{ fontSize:11, color:"var(--tp-faint)", lineHeight:1.5 }}>Good analysis of trade stats, setup performance, and basic pattern detection. Get a free key from Google AI Studio.</div>
               </button>
 
               {/* Claude option */}
@@ -6790,12 +6790,41 @@ function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCusto
 
             {/* Status */}
             <div style={{ fontSize:12, color:"var(--tp-muted)", display:"flex", alignItems:"center", gap:6 }}>
-              <div style={{ width:8, height:8, borderRadius:4, background: (prefs.aiProvider === "claude" && !(prefs.claudeApiKey||"").startsWith("sk-ant-")) ? "#eab308" : "#4ade80" }}/>
-              {(!prefs.aiProvider || prefs.aiProvider === "gemini") && "Using Gemini Flash (free) — no setup needed"}
+              <div style={{ width:8, height:8, borderRadius:4, background: (prefs.aiProvider === "claude" && !(prefs.claudeApiKey||"").startsWith("sk-ant-")) ? "#eab308" : (!prefs.aiProvider || prefs.aiProvider === "gemini") && !(prefs.geminiApiKey||"").startsWith("AIza") ? "#eab308" : "#4ade80" }}/>
+              {(!prefs.aiProvider || prefs.aiProvider === "gemini") && (prefs.geminiApiKey||"").startsWith("AIza") && "Using Gemini Flash with your API key"}
+              {(!prefs.aiProvider || prefs.aiProvider === "gemini") && !(prefs.geminiApiKey||"").startsWith("AIza") && "Gemini selected — enter your free API key below"}
               {prefs.aiProvider === "claude" && (prefs.claudeApiKey||"").startsWith("sk-ant-") && "Using Claude with your API key"}
-              {prefs.aiProvider === "claude" && !(prefs.claudeApiKey||"").startsWith("sk-ant-") && "Claude selected but no API key entered — will fall back to Gemini"}
+              {prefs.aiProvider === "claude" && !(prefs.claudeApiKey||"").startsWith("sk-ant-") && "Claude selected but no API key entered"}
             </div>
           </div>
+
+          {/* Gemini API Key */}
+          {(!prefs.aiProvider || prefs.aiProvider === "gemini") && (
+            <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:14, padding:"20px 24px", marginBottom:16 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"#4ade80", textTransform:"uppercase", letterSpacing:0.8, marginBottom:10 }}>Gemini API Key</div>
+              <div style={{ display:"flex", gap:8, marginBottom:10 }}>
+                <input
+                  type="password"
+                  value={prefs.geminiApiKey || ""}
+                  onChange={e=>onSavePrefs(p=>({...p, geminiApiKey: e.target.value}))}
+                  placeholder="Paste your Gemini API key here..."
+                  style={{ flex:1, padding:"10px 14px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", fontFamily:"'JetBrains Mono', monospace" }}
+                />
+              </div>
+              {(prefs.geminiApiKey||"").startsWith("AIza") && (
+                <div style={{ marginTop:6, marginBottom:10, fontSize:11, color:"#4ade80", display:"flex", alignItems:"center", gap:5 }}>
+                  <Check size={12}/> API key saved. AI Coach and price lookups will use Gemini.
+                </div>
+              )}
+              <div style={{ fontSize:11, color:"var(--tp-faint)", lineHeight:1.7, marginTop:8 }}>
+                <strong style={{ color:"var(--tp-muted)" }}>How to get a free key:</strong><br/>
+                1. Go to <span style={{ color:"#60a5fa" }}>aistudio.google.com/apikey</span><br/>
+                2. Click "Create API Key"<br/>
+                3. Copy the key and paste it above<br/>
+                <span style={{ color:"var(--tp-faintest)", marginTop:4, display:"inline-block" }}>Free tier: ~15 requests/minute, 1000/day. Your key is stored in your cloud account.</span>
+              </div>
+            </div>
+          )}
 
           {/* Claude API Key */}
           {prefs.aiProvider === "claude" && (
