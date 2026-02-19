@@ -1827,7 +1827,10 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
 
   // ── Apply Filters ──
   const filtered = useMemo(() => {
+    const resets = prefs?.accountResets || {};
     return trades.filter(t => {
+      // Account reset date filter — exclude pre-reset trades
+      if (t.account && resets[t.account]?.resetDate && t.date < resets[t.account].resetDate) return false;
       // Date range filter
       if (dateRange.from && t.date < dateRange.from) return false;
       if (dateRange.to && t.date > dateRange.to) return false;
@@ -1850,12 +1853,14 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
     const balanceOverrides = prefs?.balanceOverrides || {};
 
     return Object.entries(accountBalances).map(([name, startBal]) => {
-      const start = parseFloat(startBal) || 0;
-      const acctTrades = trades.filter(t => t.account === name && t.pnl !== null);
+      const reset = prefs?.accountResets?.[name];
+      const resetDate = reset?.resetDate || null;
+      const start = reset ? (parseFloat(reset.resetBalance) || 0) : (parseFloat(startBal) || 0);
+      const acctTrades = trades.filter(t => t.account === name && t.pnl !== null && (!resetDate || t.date >= resetDate));
       const realizedPnL = acctTrades.reduce((s, t) => s + t.pnl, 0);
 
       // Calculate unrealized P&L from open positions with current prices
-      const openTrades = trades.filter(t => t.account === name && t.status === "Open");
+      const openTrades = trades.filter(t => t.account === name && t.status === "Open" && (!resetDate || t.date >= resetDate));
       let unrealizedPnL = 0;
       openTrades.forEach(t => {
         const curPrice = holdingPrices[t.ticker];
@@ -1870,7 +1875,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
 
       // Calculate wheel premium income for this account
       let wheelPremium = 0;
-      (wheelTrades || []).filter(wt => wt.account === name).forEach(wt => {
+      (wheelTrades || []).filter(wt => wt.account === name && (!resetDate || wt.date >= resetDate)).forEach(wt => {
         if (wt.type === "CSP" || wt.type === "CC") {
           wheelPremium += ((parseFloat(wt.openPremium)||0) - (parseFloat(wt.closePremium)||0)) * (parseInt(wt.contracts)||0) * 100 - (parseFloat(wt.fees)||0);
         }
@@ -1879,7 +1884,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
 
       // Calculate cash deposits/withdrawals for this account
       let cashNet = 0;
-      (cashTransactions || []).filter(ct => ct.account === name).forEach(ct => {
+      (cashTransactions || []).filter(ct => ct.account === name && (!resetDate || ct.date >= resetDate)).forEach(ct => {
         cashNet += ct.type === "deposit" ? (parseFloat(ct.amount) || 0) : -(parseFloat(ct.amount) || 0);
       });
       cashNet = Math.round(cashNet * 100) / 100;
@@ -1894,7 +1899,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       const currentBal = hasOverride ? overrideVal : start + totalPnL + cashNet;
       const returnPct = start > 0 ? ((currentBal - start - cashNet) / start) * 100 : 0;
 
-      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, wheelPremium, cashNet, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal };
+      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, wheelPremium, cashNet, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal, resetDate };
     });
   }, [accountBalances, trades, prefs, wheelTrades, cashTransactions]);
 
@@ -2424,7 +2429,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
 }
 
 // ─── TRADE LOG ────────────────────────────────────────────────────────────────
-function TradeLog({ trades, onEdit, onDelete }) {
+function TradeLog({ trades, onEdit, onDelete, prefs }) {
   const [filter, setFilter] = useState({ type:"All", direction:"All", status:"All", account:"All" });
   const [sort, setSort] = useState({ key:"date", dir:-1 });
   const [search, setSearch] = useState("");
@@ -2493,6 +2498,8 @@ function TradeLog({ trades, onEdit, onDelete }) {
         <div style={{ textAlign:"center", padding:"50px 20px", color:"var(--tp-faint)" }}><List size={36} style={{ margin:"0 auto 12px", opacity:0.4 }}/><p style={{ margin:0, fontSize:14 }}>No trades match your filters.</p></div>
       ) : sorted.map((t, i) => {
         const isPos = t.pnl !== null && t.pnl > 0, isNeg = t.pnl !== null && t.pnl < 0;
+        const resets = prefs?.accountResets || {};
+        const isArchived = t.account && resets[t.account]?.resetDate && t.date < resets[t.account].resetDate;
         const isMultiLeg = t.assetType === "Options" && t.legs && t.legs.length > 1;
         const isOptions = t.assetType === "Options" && t.legs && t.legs.length > 0;
         let entryDisp, exitDisp, qtyDisp;
@@ -2520,9 +2527,10 @@ function TradeLog({ trades, onEdit, onDelete }) {
         }
 
         return (
-          <div key={t.id} style={{ display:"flex", alignItems:"center", padding:"10px 0", borderBottom:"1px solid var(--tp-border)", background:i%2===0?"var(--tp-card)":"transparent", borderRadius:6, cursor:"pointer", transition:"background 0.15s" }}
-            onMouseEnter={e=>e.currentTarget.style.background="rgba(99,102,241,0.07)"} onMouseLeave={e=>e.currentTarget.style.background=i%2===0?"var(--tp-card)":"transparent"}
+          <div key={t.id} style={{ display:"flex", alignItems:"center", padding:"10px 0", borderBottom:"1px solid var(--tp-border)", background:i%2===0?"var(--tp-card)":"transparent", borderRadius:6, cursor:"pointer", transition:"background 0.15s", opacity: isArchived ? 0.4 : 1, position:"relative" }}
+            onMouseEnter={e=>{e.currentTarget.style.background="rgba(99,102,241,0.07)"; if(isArchived) e.currentTarget.style.opacity="0.7";}} onMouseLeave={e=>{e.currentTarget.style.background=i%2===0?"var(--tp-card)":"transparent"; if(isArchived) e.currentTarget.style.opacity="0.4";}}
             onClick={()=>onEdit(t)}>
+            {isArchived && <span style={{ position:"absolute", left:4, top:3, fontSize:7, color:"#eab308", background:"rgba(234,179,8,0.15)", padding:"1px 4px", borderRadius:3, fontWeight:600, letterSpacing:0.3 }}>ARCHIVED</span>}
             <div style={colStyle(0.7)}><span style={{ color:"var(--tp-faint)", fontSize:12 }}>{t.date?.slice(5)}{t.exitDate && t.exitDate !== t.date ? <span style={{ color:"var(--tp-faintest)" }}>{" → "}{t.exitDate.slice(5)}</span> : ""}</span></div>
             <div style={colStyle(1)}>
               <span style={{ fontWeight:600, color:"var(--tp-text)" }}>{t.ticker}</span>
@@ -4978,7 +4986,14 @@ function ReviewTab({ trades, accountBalances, prefs, journal, goals, playbooks }
   const [replayFilter, setReplayFilter] = useState("all"); // all | wins | losses
   const [viewingSrc, setViewingSrc] = useState(null);
 
-  const closed = useMemo(() => trades.filter(t => t.pnl !== null).sort((a,b)=>new Date(a.date)-new Date(b.date)), [trades]);
+  const closed = useMemo(() => {
+    const resets = prefs?.accountResets || {};
+    return trades.filter(t => {
+      if (t.pnl === null) return false;
+      if (t.account && resets[t.account]?.resetDate && t.date < resets[t.account].resetDate) return false;
+      return true;
+    }).sort((a,b)=>new Date(a.date)-new Date(b.date));
+  }, [trades, prefs]);
   const totalCapital = useMemo(() => Object.values(accountBalances||{}).reduce((s,v)=>s+(parseFloat(v)||0),0), [accountBalances]);
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -7856,6 +7871,7 @@ function AccountBalancesManager({ accountBalances, onSave, customFields, trades,
   const [editValue, setEditValue] = useState("");
   const [showCashForm, setShowCashForm] = useState(false);
   const [cashForm, setCashForm] = useState({ account: "", type: "deposit", amount: "", note: "", date: new Date().toISOString().split("T")[0] });
+  const [resetForm, setResetForm] = useState(null); // { account, balance, date, note }
 
   const accounts = customFields.accounts || [];
   const allAccountNames = [...new Set([...accounts, ...Object.keys(accountBalances)])];
@@ -7959,6 +7975,7 @@ function AccountBalancesManager({ accountBalances, onSave, customFields, trades,
                     {accounts.includes(name) && <span style={{ fontSize:9, color:"#6366f1", background:"rgba(99,102,241,0.12)", padding:"2px 6px", borderRadius:4 }}>Custom Field</span>}
                   </div>
                   <div style={{ display:"flex", gap:4 }}>
+                    <button onClick={()=>setResetForm({ account: name, balance: "", date: new Date().toISOString().split("T")[0], note: "" })} style={{ padding:"4px 8px", borderRadius:4, border:"none", background:"rgba(234,179,8,0.1)", color:"#eab308", cursor:"pointer", fontSize:10 }}>Reset</button>
                     <button onClick={()=>startEdit(name)} style={{ padding:"4px 8px", borderRadius:4, border:"none", background:"var(--tp-input)", color:"var(--tp-muted)", cursor:"pointer", fontSize:10 }}>Edit</button>
                     <button onClick={()=>handleRemove(name)} style={{ padding:"4px 6px", borderRadius:4, border:"none", background:"transparent", color:"var(--tp-faint)", cursor:"pointer" }} onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="#5c6070"}><Trash2 size={11}/></button>
                   </div>
@@ -7974,6 +7991,12 @@ function AccountBalancesManager({ accountBalances, onSave, customFields, trades,
                   <div>
                     <div style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, marginBottom:4 }}>Starting Balance</div>
                     <div style={{ fontSize:22, fontWeight:700, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>${balance.toLocaleString("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 })}</div>
+                    {(prefs?.accountResets?.[name]) && (
+                      <div style={{ marginTop:6, fontSize:10, color:"#eab308", background:"rgba(234,179,8,0.08)", border:"1px solid rgba(234,179,8,0.15)", borderRadius:6, padding:"5px 8px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                        <span>Reset {prefs.accountResets[name].resetDate} → ${parseFloat(prefs.accountResets[name].resetBalance).toLocaleString()}{prefs.accountResets[name].note ? ` · ${prefs.accountResets[name].note}` : ""}</span>
+                        <button onClick={()=>onSavePrefs(p=>{const r={...(p.accountResets||{})}; delete r[name]; return {...p, accountResets:r};})} style={{ background:"none", border:"none", color:"#eab308", cursor:"pointer", padding:0, fontSize:9 }}>Clear</button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -7982,7 +8005,44 @@ function AccountBalancesManager({ accountBalances, onSave, customFields, trades,
         </div>
       )}
 
-      {/* ── Manual Balance Override ── */}
+      {/* ── Account Reset Form ── */}
+      {resetForm && (
+        <div style={{ marginTop:16, background:"rgba(234,179,8,0.06)", border:"1px solid rgba(234,179,8,0.25)", borderRadius:12, padding:"18px 20px" }}>
+          <div style={{ fontSize:14, fontWeight:700, color:"#eab308", marginBottom:4 }}>Reset Account: {resetForm.account}</div>
+          <div style={{ fontSize:12, color:"var(--tp-faint)", marginBottom:14, lineHeight:1.6 }}>
+            This sets a new starting point for the account. All trades before the reset date will be archived — they'll still appear in your Trade Log (dimmed) and remain available for AI Coach review, but they won't affect your Dashboard stats, P&L calculations, or goal tracking.
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:12 }}>
+            <div>
+              <label style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, display:"block", marginBottom:4 }}>New Starting Balance ($)</label>
+              <input type="number" value={resetForm.balance} onChange={e=>setResetForm(f=>({...f, balance:e.target.value}))} placeholder="25000" autoFocus style={{ width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", fontFamily:"'JetBrains Mono', monospace", boxSizing:"border-box" }}/>
+            </div>
+            <div>
+              <label style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, display:"block", marginBottom:4 }}>Reset Date</label>
+              <input type="date" value={resetForm.date} onChange={e=>setResetForm(f=>({...f, date:e.target.value}))} style={{ width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", boxSizing:"border-box" }}/>
+            </div>
+            <div>
+              <label style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, display:"block", marginBottom:4 }}>Note (optional)</label>
+              <input value={resetForm.note} onChange={e=>setResetForm(f=>({...f, note:e.target.value}))} placeholder="e.g. Moved to ThinkorSwim" style={{ width:"100%", padding:"9px 12px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:8, color:"var(--tp-text)", fontSize:13, outline:"none", boxSizing:"border-box" }}/>
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+            <button onClick={()=>{
+              const bal = parseFloat(resetForm.balance);
+              if (isNaN(bal) || !resetForm.date) return;
+              // Save reset to prefs and update starting balance
+              onSavePrefs(p => ({
+                ...p,
+                accountResets: { ...(p.accountResets || {}), [resetForm.account]: { resetDate: resetForm.date, resetBalance: bal, note: resetForm.note, createdAt: new Date().toISOString() } }
+              }));
+              onSave(prev => ({ ...prev, [resetForm.account]: bal }));
+              setResetForm(null);
+            }} style={{ padding:"9px 22px", borderRadius:8, border:"none", background:"#eab308", color:"#000", cursor:"pointer", fontSize:13, fontWeight:700 }}>Reset Account</button>
+            <button onClick={()=>setResetForm(null)} style={{ padding:"9px 16px", borderRadius:8, border:"1px solid var(--tp-border-l)", background:"transparent", color:"var(--tp-muted)", cursor:"pointer", fontSize:13 }}>Cancel</button>
+            <span style={{ fontSize:11, color:"var(--tp-faintest)", marginLeft:8 }}>Trades before the reset date will be archived, not deleted.</span>
+          </div>
+        </div>
+      )}
       {accountsWithBalances.length > 0 && (
         <div style={{ marginTop:24 }}>
           <div style={{ fontSize:16, fontWeight:600, color:"var(--tp-text)", marginBottom:4 }}>Balance Override</div>
@@ -8571,7 +8631,7 @@ function TradePulseApp({ user, onSignOut }) {
         {tab==="playbook" && <PlaybookTab playbooks={playbooks} onSave={setPlaybooks} trades={trades} theme={theme}/>}
         {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} trades={trades}/>}
         {tab==="watchlist" && <Watchlist watchlists={watchlists} onSave={setWatchlists} onPromoteTrade={promoteTrade} theme={theme}/>}
-        {tab==="log" && <TradeLog trades={trades} onEdit={t=>{setEditingTrade(t);setShowTradeModal(true);}} onDelete={handleTradeDelete} theme={theme}/>}
+        {tab==="log" && <TradeLog trades={trades} onEdit={t=>{setEditingTrade(t);setShowTradeModal(true);}} onDelete={handleTradeDelete} theme={theme} prefs={prefs}/>}
         {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme} wheelTrades={wheelTrades} cashTransactions={cashTransactions} onSaveCashTransactions={setCashTransactions}/>}
       </div>
       {showTradeModal && <TradeModal onSave={handleTradeSave} onClose={()=>{setShowTradeModal(false);setEditingTrade(null);}} editTrade={editingTrade} futuresSettings={futuresSettings} customFields={customFields} playbooks={playbooks} theme={theme} accountBalances={accountBalances}/>}
