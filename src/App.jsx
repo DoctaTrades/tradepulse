@@ -3060,7 +3060,7 @@ function WheelTradeModal({ ticker, onSave, onClose, editTrade, accounts, default
   );
 }
 // ─── DAILY GOAL TRACKER ─────────────────────────────────────────────────────
-function GoalTracker({ goals, onSave, trades, theme, accounts }) {
+function GoalTracker({ goals, onSave, trades, theme, accounts, prefs }) {
   const defaultGoal = { startingBalance: 200, profitPct: 2, stopPct: 1, dailyLog: {} };
 
   // Migrate old flat structure → per-account structure
@@ -3091,6 +3091,8 @@ function GoalTracker({ goals, onSave, trades, theme, accounts }) {
   const [dailyLog, setDailyLog] = useState(g.dailyLog || {});
   const [showProjection, setShowProjection] = useState(false);
   const [projectionDays, setProjectionDays] = useState(30);
+  const [showBacklog, setShowBacklog] = useState(false);
+  const [backlogDate, setBacklogDate] = useState("");
 
   // Sync when account changes
   useEffect(() => {
@@ -3138,13 +3140,24 @@ function GoalTracker({ goals, onSave, trades, theme, accounts }) {
   const todayStr = new Date().toISOString().split("T")[0];
   const todayEntry = dailyLog[todayStr];
 
-  // Auto-pull today's P&L from trades (filtered by account)
-  const todayTrades = useMemo(() => {
-    const dayTrades = trades.filter(t => t.date === todayStr);
-    if (selectedAccount === "All") return dayTrades;
-    return dayTrades.filter(t => t.account === selectedAccount);
-  }, [trades, todayStr, selectedAccount]);
+  // Auto-pull trades for a specific date (filtered by account + reset date)
+  const getTradesForDate = useCallback((dateStr) => {
+    const resets = prefs?.accountResets || {};
+    return trades.filter(t => {
+      if (t.date !== dateStr) return false;
+      if (selectedAccount !== "All" && t.account !== selectedAccount) return false;
+      // Respect reset dates
+      if (t.account && resets[t.account]?.resetDate && t.date < resets[t.account].resetDate) return false;
+      return true;
+    });
+  }, [trades, selectedAccount, prefs]);
+
+  const todayTrades = useMemo(() => getTradesForDate(todayStr), [getTradesForDate, todayStr]);
   const todayTradesPnL = todayTrades.filter(t => t.pnl !== null).reduce((s, t) => s + t.pnl, 0);
+
+  // Backlog date trades
+  const backlogTrades = useMemo(() => backlogDate ? getTradesForDate(backlogDate) : [], [getTradesForDate, backlogDate]);
+  const backlogTradesPnL = backlogTrades.filter(t => t.pnl !== null).reduce((s, t) => s + t.pnl, 0);
 
   const logDay = (date, pnl, hit) => {
     const updated = { ...dailyLog, [date]: { ...dailyLog[date], pnl, hit, note: dailyLog[date]?.note || "" } };
@@ -3307,6 +3320,50 @@ function GoalTracker({ goals, onSave, trades, theme, accounts }) {
                 </div>
                 <button onClick={()=>{const v=parseFloat(document.getElementById("goal-pnl-input")?.value)||0;logDay(todayStr,v,v>=todayTarget);}} style={{ padding:"9px 16px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#059669,#34d399)", color:"#fff", cursor:"pointer", fontSize:12, fontWeight:600, whiteSpace:"nowrap" }}>✓ Hit Goal</button>
                 <button onClick={()=>{const v=parseFloat(document.getElementById("goal-pnl-input")?.value)||0;logDay(todayStr,v,false);}} style={{ padding:"9px 16px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#dc2626,#f87171)", color:"#fff", cursor:"pointer", fontSize:12, fontWeight:600, whiteSpace:"nowrap" }}>✗ Missed</button>
+              </div>
+            )}
+          </div>
+
+          {/* Log Previous Day */}
+          <div style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:14, padding:"18px 20px" }}>
+            {!showBacklog ? (
+              <button onClick={()=>{setShowBacklog(true); setBacklogDate("");}} style={{ width:"100%", padding:"10px", borderRadius:8, border:"1px dashed var(--tp-border-l)", background:"transparent", color:"var(--tp-faint)", cursor:"pointer", fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                <Calendar size={13}/> Log a Previous Day
+              </button>
+            ) : (
+              <div>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+                  <div style={{ fontSize:12, fontWeight:600, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.8 }}>Log Previous Day</div>
+                  <button onClick={()=>setShowBacklog(false)} style={{ background:"none", border:"none", color:"var(--tp-faint)", cursor:"pointer" }}><X size={14}/></button>
+                </div>
+                <div style={{ marginBottom:10 }}>
+                  <div style={{ fontSize:10, color:"var(--tp-faint)", marginBottom:4 }}>Select Date</div>
+                  <input type="date" value={backlogDate} onChange={e=>setBacklogDate(e.target.value)} max={todayStr} style={{ ...inputStyle, width:"100%", textAlign:"left" }}/>
+                </div>
+                {backlogDate && dailyLog[backlogDate] && (
+                  <div style={{ padding:"8px 12px", borderRadius:8, background:"rgba(234,179,8,0.06)", border:"1px solid rgba(234,179,8,0.15)", marginBottom:8, fontSize:11, color:"#eab308", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <span>Already logged: {fmt(dailyLog[backlogDate].pnl)} — {dailyLog[backlogDate].hit ? "✓ Hit" : "✗ Missed"}</span>
+                    <button onClick={()=>removeDay(backlogDate)} style={{ fontSize:10, color:"#f87171", background:"rgba(248,113,113,0.1)", border:"1px solid rgba(248,113,113,0.2)", borderRadius:4, padding:"2px 8px", cursor:"pointer" }}>Remove</button>
+                  </div>
+                )}
+                {backlogDate && !dailyLog[backlogDate] && (
+                  <div>
+                    {backlogTrades.length > 0 && (
+                      <div style={{ fontSize:11, color:"var(--tp-muted)", marginBottom:8, padding:"6px 10px", background:"var(--tp-card)", borderRadius:6 }}>
+                        Found {backlogTrades.length} trade{backlogTrades.length!==1?"s":""} on {backlogDate.slice(5)} → <span style={{ color: backlogTradesPnL >= 0 ? "#4ade80" : "#f87171", fontWeight:600, fontFamily:"'JetBrains Mono', monospace" }}>{fmt(backlogTradesPnL)}</span>
+                        <button onClick={()=>{logDay(backlogDate, backlogTradesPnL, backlogTradesPnL >= (currentBalance * (profitPct/100))); setShowBacklog(false); setBacklogDate("");}} style={{ marginLeft:8, padding:"2px 8px", borderRadius:4, border:"1px solid #6366f1", background:"rgba(99,102,241,0.1)", color:"#a5b4fc", cursor:"pointer", fontSize:10 }}>Use this</button>
+                      </div>
+                    )}
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr auto auto", gap:8, alignItems:"end" }}>
+                      <div>
+                        <div style={{ fontSize:10, color:"var(--tp-faint)", marginBottom:4 }}>P&L ($)</div>
+                        <input id="goal-backlog-pnl" type="number" step="0.01" placeholder="0.00" defaultValue={backlogTrades.length > 0 ? backlogTradesPnL.toFixed(2) : ""} style={{ ...inputStyle, width:"100%", textAlign:"left" }}/>
+                      </div>
+                      <button onClick={()=>{const v=parseFloat(document.getElementById("goal-backlog-pnl")?.value)||0;logDay(backlogDate,v,v>=(currentBalance*(profitPct/100)));setShowBacklog(false);setBacklogDate("");}} style={{ padding:"9px 16px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#059669,#34d399)", color:"#fff", cursor:"pointer", fontSize:12, fontWeight:600, whiteSpace:"nowrap" }}>✓ Hit</button>
+                      <button onClick={()=>{const v=parseFloat(document.getElementById("goal-backlog-pnl")?.value)||0;logDay(backlogDate,v,false);setShowBacklog(false);setBacklogDate("");}} style={{ padding:"9px 16px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#dc2626,#f87171)", color:"#fff", cursor:"pointer", fontSize:12, fontWeight:600, whiteSpace:"nowrap" }}>✗ Missed</button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -8620,7 +8677,7 @@ function TradePulseApp({ user, onSignOut }) {
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
         {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
-        {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]}/>}
+        {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} prefs={prefs}/>}
         {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} onStartWheel={(ticker, account, shares, avgPrice) => {
           // Create a Shares entry in wheel trades to link the position
           const wheelShareEntry = { id: Date.now() + Math.random(), ticker, type: "Shares", date: new Date().toISOString().split("T")[0], shares: String(shares), avgPrice: String(avgPrice), notes: `Linked from Holdings (${shares} shares @ $${avgPrice.toFixed(2)})`, account, contracts:"", strike:"", openPremium:"", closePremium:"", expiry:"", assigned:false, calledAway:false, sharesCalledAway:"" };
