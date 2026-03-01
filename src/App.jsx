@@ -919,7 +919,7 @@ function TradeModal({ onSave, onClose, editTrade, futuresSettings, customFields,
             </div>
             {isCalendar ? (
               trade.legs.map((leg, i) => (
-                <CalendarLegRow key={leg.id || i} leg={leg} index={i} onChange={updateLeg} showRolls={trade.optionsStrategyType === "Diagonal" || trade.optionsStrategyType === "PMCC / Diagonal"}/>
+                <CalendarLegRow key={leg.id || i} leg={leg} index={i} onChange={updateLeg} showRolls={trade.optionsStrategyType === "Diagonal" || trade.optionsStrategyType === "PMCC / Diagonal" || trade.optionsStrategyType === "Calendar Press" || trade.optionsStrategyType === "Calendar"}/>
               ))
             ) : (
               trade.legs.map((leg, i) => (
@@ -3178,15 +3178,27 @@ function WheelSubTab({ wheelTrades, onSave, accounts, trades, onSaveTrades, acco
 
   useEffect(() => {
     if (!onSaveTrades || !wheelTrades.length) return;
-    const assignedCSPs = wheelTrades.filter(wt => wt.type === "CSP" && wt.assigned);
-    const missingHoldings = assignedCSPs.filter(wt => !trades.find(t => t.id === `wheel-assigned-${wt.id}`));
-    if (missingHoldings.length === 0) return;
+    const needsSync = wheelTrades.filter(wt => {
+      if (wt.type === "CSP" && wt.assigned) return true;
+      if (wt.type === "Shares" && (parseInt(wt.shares)||0) > 0) return true;
+      return false;
+    });
+    const missing = needsSync.filter(wt => !trades.find(t => t.id === `wheel-assigned-${wt.id}`));
+    if (missing.length === 0) return;
     onSaveTrades(prev => {
-      const newH = missingHoldings.filter(wt => !prev.find(t => t.id === `wheel-assigned-${wt.id}`)).map(wt => {
-        const shares = (parseInt(wt.contracts)||1)*100, strike = parseFloat(wt.strike)||0, prem = parseFloat(wt.openPremium)||0;
-        return { id:`wheel-assigned-${wt.id}`, ticker:wt.ticker, date:wt.expiry||wt.date, assetType:"Stocks", direction:"Long", status:"Open",
-          entryPrice:String((strike-prem).toFixed(2)), quantity:String(shares), account:wt.account||"", timeframe:"Swing",
-          notes:`Wheel assignment from CSP @ $${strike} strike. Premium received: $${prem}/contract.`, tradeStrategy:"Wheel Strategy", source:"wheel-assignment" };
+      const newH = missing.filter(wt => !prev.find(t => t.id === `wheel-assigned-${wt.id}`)).map(wt => {
+        if (wt.type === "CSP") {
+          const shares = (parseInt(wt.contracts)||1)*100, strike = parseFloat(wt.strike)||0, prem = parseFloat(wt.openPremium)||0;
+          return { id:`wheel-assigned-${wt.id}`, ticker:wt.ticker, date:wt.expiry||wt.date, assetType:"Stocks", direction:"Long", status:"Open",
+            entryPrice:String((strike-prem).toFixed(2)), quantity:String(shares), account:wt.account||"", timeframe:"Swing",
+            notes:`Wheel assignment from CSP @ $${strike} strike. Premium received: $${prem}/contract.`, tradeStrategy:"Wheel Strategy", source:"wheel-assignment" };
+        } else {
+          // Shares type
+          const shares = parseInt(wt.shares)||0, price = parseFloat(wt.avgPrice)||0;
+          return { id:`wheel-assigned-${wt.id}`, ticker:wt.ticker, date:wt.date, assetType:"Stocks", direction:"Long", status:"Open",
+            entryPrice:String(price.toFixed(2)), quantity:String(shares), account:wt.account||"", timeframe:"Swing",
+            notes:wt.notes || `Wheel shares purchased @ $${price.toFixed(2)}`, tradeStrategy:"Wheel Strategy", source:"wheel-assignment" };
+        }
       });
       return [...newH, ...prev];
     });
@@ -3213,6 +3225,25 @@ function WheelSubTab({ wheelTrades, onSave, accounts, trades, onSaveTrades, acco
       });
     }
     if (trade.type === "CSP" && !trade.assigned && onSaveTrades) onSaveTrades(prev => prev.filter(t => t.id !== `wheel-assigned-${trade.id}`));
+    // Sync Shares-type wheel trades to Holdings
+    if (trade.type === "Shares" && onSaveTrades) {
+      const holdingId = `wheel-assigned-${trade.id}`;
+      const shares = parseInt(trade.shares)||0;
+      const price = parseFloat(trade.avgPrice)||0;
+      if (shares > 0) {
+        onSaveTrades(prev => {
+          const existing = prev.find(t => t.id === holdingId);
+          const ht = { id:holdingId, ticker:trade.ticker, date:trade.date, assetType:"Stocks", direction:"Long", status:"Open",
+            entryPrice:String(price.toFixed(2)), quantity:String(shares), account:trade.account||"", timeframe:"Swing",
+            notes:trade.notes || `Wheel shares purchased @ $${price.toFixed(2)}`, tradeStrategy:"Wheel Strategy", source:"wheel-assignment" };
+          if (existing) return prev.map(t => t.id === holdingId ? {...t,...ht} : t);
+          return [ht, ...prev];
+        });
+      } else {
+        // Shares set to 0 = remove
+        onSaveTrades(prev => prev.filter(t => t.id !== holdingId));
+      }
+    }
     if (trade.type === "CC" && trade.calledAway && onSaveTrades) {
       const sharesCalledAway = parseInt(trade.sharesCalledAway) || ((parseInt(trade.contracts)||1)*100);
       const callStrike = parseFloat(trade.strike)||0;
