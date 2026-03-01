@@ -274,7 +274,7 @@ function formatWeekLabel(ws) { const d = new Date(ws + "T12:00:00"); const e = n
 
 // ─── LEG HELPERS ──────────────────────────────────────────────────────────────
 const emptyLeg = (action = "Buy", type = "Call") => ({ id: Date.now() + Math.random(), action, type, strike: "", expiration: "", contracts: "1", entryPremium: "", exitPremium: "", partialCloses: [], rolls: [] });
-const emptyRoll = () => ({ id: Date.now() + Math.random(), date: new Date().toISOString().split("T")[0], sellPremium: "", buybackPremium: "" });
+const emptyRoll = () => ({ id: Date.now() + Math.random(), date: new Date().toISOString().split("T")[0], sellPremium: "", buybackPremium: "", contracts: "" });
 
 function defaultLegs(strategyType) {
   switch (strategyType) {
@@ -541,7 +541,8 @@ function LegRow({ leg, index, onChange, onRemove, showRemove, locked, showRolls 
   const totalRollCredits = (leg.rolls || []).reduce((sum, roll) => {
     const sell = parseFloat(roll.sellPremium) || 0;
     const buyback = parseFloat(roll.buybackPremium) || 0;
-    return sum + (sell - buyback);
+    const rqty = parseInt(roll.contracts) || parseInt(leg.contracts) || 1;
+    return sum + (sell - buyback) * rqty * 100;
   }, 0);
 
   // Partial close helpers
@@ -693,7 +694,7 @@ function LegRow({ leg, index, onChange, onRemove, showRemove, locked, showRolls 
                 {showRollHistory ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
               </button>
               <span style={{ fontSize:11, color:"#eab308", fontWeight:600, textTransform:"uppercase", letterSpacing:0.8 }}>Roll History</span>
-              {totalRollCredits > 0 && <span style={{ fontSize:11, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>+${(totalRollCredits * (parseInt(leg.contracts)||1) * 100).toFixed(2)}</span>}
+              {totalRollCredits > 0 && <span style={{ fontSize:11, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>+${totalRollCredits.toFixed(2)}</span>}
               <span style={{ fontSize:10, color:"var(--tp-faint)" }}>({(leg.rolls || []).length} roll{(leg.rolls || []).length !== 1 ? "s" : ""})</span>
             </div>
             <button onClick={addRoll} style={{ padding:"3px 8px", borderRadius:4, border:"1px solid rgba(234,179,8,0.3)", background:"rgba(234,179,8,0.1)", color:"#eab308", cursor:"pointer", fontSize:10, fontWeight:500 }}>+ Add Roll</button>
@@ -701,8 +702,11 @@ function LegRow({ leg, index, onChange, onRemove, showRemove, locked, showRolls 
           
           {showRollHistory && (leg.rolls || []).length > 0 && (
             <div style={{ display:"grid", gap:6 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"80px 50px 1fr 1fr 70px 24px", gap:8, padding:"0 10px", fontSize:8, color:"var(--tp-faintest)", textTransform:"uppercase", letterSpacing:0.5 }}>
+                <span>Date</span><span style={{textAlign:"center"}}>Qty</span><span>Buyback $</span><span>Sell $</span><span style={{textAlign:"right"}}>Net</span><span/>
+              </div>
               {(leg.rolls || []).map((roll, rollIdx) => (
-                <RollRow key={roll.id} roll={roll} index={rollIdx} onChange={(updated) => updateRoll(rollIdx, updated)} onRemove={() => removeRoll(rollIdx)}/>
+                <RollRow key={roll.id} roll={roll} index={rollIdx} onChange={(updated) => updateRoll(rollIdx, updated)} onRemove={() => removeRoll(rollIdx)} legContracts={parseInt(leg.contracts)||1}/>
               ))}
             </div>
           )}
@@ -712,19 +716,24 @@ function LegRow({ leg, index, onChange, onRemove, showRemove, locked, showRolls 
   );
 }
 
-function RollRow({ roll, index, onChange, onRemove }) {
+function RollRow({ roll, index, onChange, onRemove, legContracts }) {
   const set = k => v => onChange({ ...roll, [k]: v });
+  const qty = parseInt(roll.contracts) || parseInt(legContracts) || 1;
   const netCredit = (parseFloat(roll.sellPremium) || 0) - (parseFloat(roll.buybackPremium) || 0);
+  const totalCredit = netCredit * qty * 100;
   
   return (
-    <div style={{ background:"rgba(0,0,0,0.2)", borderRadius:6, padding:"8px 10px", display:"grid", gridTemplateColumns:"80px 1fr 1fr 1fr 24px", gap:8, alignItems:"center" }}>
-      <input type="date" value={roll.date} onChange={e=>set("date")(e.target.value)} style={{ padding:"5px 6px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:4, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box" }}/>
-      <div><input type="number" value={roll.sellPremium} onChange={e=>set("sellPremium")(e.target.value)} placeholder="Sell $" style={{ width:"100%", padding:"5px 6px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:4, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box" }}/></div>
-      <div><input type="number" value={roll.buybackPremium} onChange={e=>set("buybackPremium")(e.target.value)} placeholder="Buyback $" style={{ width:"100%", padding:"5px 6px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:4, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box" }}/></div>
-      <div style={{ fontSize:11, fontFamily:"'JetBrains Mono', monospace", color: netCredit > 0 ? "#4ade80" : "#5c6070" }}>
-        {netCredit > 0 ? `+$${netCredit.toFixed(2)}` : "—"}
+    <div style={{ background:"rgba(0,0,0,0.2)", borderRadius:6, padding:"8px 10px" }}>
+      <div style={{ display:"grid", gridTemplateColumns:"80px 50px 1fr 1fr 70px 24px", gap:8, alignItems:"center" }}>
+        <input type="date" value={roll.date} onChange={e=>set("date")(e.target.value)} style={{ padding:"5px 6px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:4, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box" }}/>
+        <div><input type="number" value={roll.contracts || ""} onChange={e=>set("contracts")(e.target.value)} placeholder={String(legContracts || 1)} min="1" style={{ width:"100%", padding:"5px 6px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:4, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box", textAlign:"center" }}/></div>
+        <div><input type="number" value={roll.buybackPremium} onChange={e=>set("buybackPremium")(e.target.value)} placeholder="Buyback $" style={{ width:"100%", padding:"5px 6px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:4, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box" }}/></div>
+        <div><input type="number" value={roll.sellPremium} onChange={e=>set("sellPremium")(e.target.value)} placeholder="Sell $" style={{ width:"100%", padding:"5px 6px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:4, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box" }}/></div>
+        <div style={{ fontSize:11, fontFamily:"'JetBrains Mono', monospace", color: totalCredit > 0 ? "#4ade80" : totalCredit < 0 ? "#f87171" : "var(--tp-faintest)", textAlign:"right" }}>
+          {totalCredit !== 0 ? `${totalCredit > 0 ? "+" : ""}$${totalCredit.toFixed(0)}` : "—"}
+        </div>
+        <button onClick={onRemove} style={{ background:"none", border:"none", color:"var(--tp-faint)", cursor:"pointer", padding:2 }} onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="#5c6070"}><X size={12}/></button>
       </div>
-      <button onClick={onRemove} style={{ background:"none", border:"none", color:"var(--tp-faint)", cursor:"pointer", padding:2 }} onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="#5c6070"}><X size={12}/></button>
     </div>
   );
 }
@@ -753,7 +762,8 @@ function CalendarLegRow({ leg, index, onChange, showRolls }) {
   const totalRollCredits = (leg.rolls || []).reduce((sum, roll) => {
     const sell = parseFloat(roll.sellPremium) || 0;
     const buyback = parseFloat(roll.buybackPremium) || 0;
-    return sum + (sell - buyback);
+    const rqty = parseInt(roll.contracts) || parseInt(leg.contracts) || 1;
+    return sum + (sell - buyback) * rqty * 100;
   }, 0);
   
   return (
@@ -812,7 +822,7 @@ function CalendarLegRow({ leg, index, onChange, showRolls }) {
                 {showRollHistory ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
               </button>
               <span style={{ fontSize:11, color:"#eab308", fontWeight:600, textTransform:"uppercase", letterSpacing:0.8 }}>Roll History</span>
-              {totalRollCredits > 0 && <span style={{ fontSize:11, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>+${(totalRollCredits * (parseInt(leg.contracts)||1) * 100).toFixed(2)}</span>}
+              {totalRollCredits > 0 && <span style={{ fontSize:11, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>+${totalRollCredits.toFixed(2)}</span>}
               <span style={{ fontSize:10, color:"var(--tp-faint)" }}>({(leg.rolls || []).length} roll{(leg.rolls || []).length !== 1 ? "s" : ""})</span>
             </div>
             <button onClick={addRoll} style={{ padding:"3px 8px", borderRadius:4, border:"1px solid rgba(234,179,8,0.3)", background:"rgba(234,179,8,0.1)", color:"#eab308", cursor:"pointer", fontSize:10, fontWeight:500 }}>+ Add Roll</button>
@@ -820,8 +830,11 @@ function CalendarLegRow({ leg, index, onChange, showRolls }) {
           
           {showRollHistory && (leg.rolls || []).length > 0 && (
             <div style={{ display:"grid", gap:6 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"80px 50px 1fr 1fr 70px 24px", gap:8, padding:"0 10px", fontSize:8, color:"var(--tp-faintest)", textTransform:"uppercase", letterSpacing:0.5 }}>
+                <span>Date</span><span style={{textAlign:"center"}}>Qty</span><span>Buyback $</span><span>Sell $</span><span style={{textAlign:"right"}}>Net</span><span/>
+              </div>
               {(leg.rolls || []).map((roll, rollIdx) => (
-                <RollRow key={roll.id} roll={roll} index={rollIdx} onChange={(updated) => updateRoll(rollIdx, updated)} onRemove={() => removeRoll(rollIdx)}/>
+                <RollRow key={roll.id} roll={roll} index={rollIdx} onChange={(updated) => updateRoll(rollIdx, updated)} onRemove={() => removeRoll(rollIdx)} legContracts={parseInt(leg.contracts)||1}/>
               ))}
             </div>
           )}
