@@ -1856,8 +1856,8 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       const reset = prefs?.accountResets?.[name];
       const resetDate = reset?.resetDate || null;
       const start = reset ? (parseFloat(reset.resetBalance) || 0) : (parseFloat(startBal) || 0);
-      const acctTrades = trades.filter(t => t.account === name && t.pnl !== null && (!resetDate || t.date >= resetDate));
-      const realizedPnL = acctTrades.reduce((s, t) => s + t.pnl, 0);
+      const acctTrades = trades.filter(t => t.account === name && t.pnl !== null && t.pnl !== undefined && !isNaN(t.pnl) && (!resetDate || t.date >= resetDate));
+      const realizedPnL = acctTrades.reduce((s, t) => s + (parseFloat(t.pnl) || 0), 0);
 
       // Calculate unrealized P&L from open positions with current prices
       const openTrades = trades.filter(t => t.account === name && t.status === "Open" && (!resetDate || t.date >= resetDate));
@@ -1896,15 +1896,15 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       });
       dividendIncome = Math.round(dividendIncome * 100) / 100;
 
-      const totalPnL = realizedPnL + unrealizedPnL + wheelPremium;
+      const totalPnL = (realizedPnL || 0) + (unrealizedPnL || 0) + (wheelPremium || 0);
 
       // Manual override takes priority if set
       const override = balanceOverrides?.[name];
       const hasOverride = override !== undefined && override !== null && override !== "";
       const overrideVal = hasOverride ? parseFloat(override) : null;
 
-      const currentBal = hasOverride ? overrideVal : start + totalPnL + cashNet + dividendIncome;
-      const returnPct = start > 0 ? ((currentBal - start - cashNet) / start) * 100 : 0;
+      const currentBal = hasOverride ? (overrideVal || 0) : (start || 0) + (totalPnL || 0) + (cashNet || 0) + (dividendIncome || 0);
+      const returnPct = start > 0 ? ((currentBal - start - (cashNet || 0)) / start) * 100 : 0;
 
       return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, wheelPremium, cashNet, dividendIncome, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal, resetDate };
     });
@@ -2095,14 +2095,14 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
                   <div style={{ fontSize:13, fontWeight:700, color:theme.text }}>{acct.name}</div>
                   <span style={{ fontSize:9, fontWeight:600, color: acct.returnPct >= 0 ? "#4ade80" : "#f87171", background: acct.returnPct >= 0 ? "rgba(74,222,128,0.1)" : "rgba(248,113,113,0.1)", padding:"2px 8px", borderRadius:10, fontFamily:"'JetBrains Mono', monospace" }}>
-                    {acct.returnPct >= 0 ? "+" : ""}{acct.returnPct.toFixed(1)}%
+                    {acct.returnPct >= 0 ? "+" : ""}{(isNaN(acct.returnPct) ? 0 : acct.returnPct).toFixed(1)}%
                   </span>
                 </div>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"end" }}>
                   <div>
                     <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2 }}>Current Balance {acct.hasOverride && <span style={{ color:"#eab308" }}>(Override)</span>}</div>
                     <div style={{ fontSize:20, fontWeight:700, color: acct.currentBal >= acct.startBal ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>
-                      ${acct.currentBal.toLocaleString("en-US",{minimumFractionDigits:2, maximumFractionDigits:2})}
+                      ${(isNaN(acct.currentBal) ? 0 : acct.currentBal).toLocaleString("en-US",{minimumFractionDigits:2, maximumFractionDigits:2})}
                     </div>
                   </div>
                   <div style={{ textAlign:"right" }}>
