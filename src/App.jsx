@@ -1771,7 +1771,7 @@ function RiskCalculator({ theme, accountBalances, futuresSettings, customFields 
   );
 }
 
-function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, wheelTrades, cashTransactions }) {
+function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, wheelTrades, cashTransactions, dividends }) {
   const widgetConfig = useMemo(() => {
     if (!dashWidgets || dashWidgets.length === 0) return DEFAULT_DASH_WIDGETS;
     const merged = [];
@@ -1889,6 +1889,13 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       });
       cashNet = Math.round(cashNet * 100) / 100;
 
+      // Calculate cash dividend income for this account
+      let dividendIncome = 0;
+      (dividends || []).filter(d => d.type === "cash" && (d.account === name || (!d.account && name === Object.keys(accountBalances)[0])) && (!resetDate || d.date >= resetDate)).forEach(d => {
+        dividendIncome += parseFloat(d.totalAmount) || 0;
+      });
+      dividendIncome = Math.round(dividendIncome * 100) / 100;
+
       const totalPnL = realizedPnL + unrealizedPnL + wheelPremium;
 
       // Manual override takes priority if set
@@ -1896,12 +1903,12 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       const hasOverride = override !== undefined && override !== null && override !== "";
       const overrideVal = hasOverride ? parseFloat(override) : null;
 
-      const currentBal = hasOverride ? overrideVal : start + totalPnL + cashNet;
+      const currentBal = hasOverride ? overrideVal : start + totalPnL + cashNet + dividendIncome;
       const returnPct = start > 0 ? ((currentBal - start - cashNet) / start) * 100 : 0;
 
-      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, wheelPremium, cashNet, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal, resetDate };
+      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, wheelPremium, cashNet, dividendIncome, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal, resetDate };
     });
-  }, [accountBalances, trades, prefs, wheelTrades, cashTransactions]);
+  }, [accountBalances, trades, prefs, wheelTrades, cashTransactions, dividends]);
 
   // ── Compute Stats ──
   const stats = useMemo(() => {
@@ -2101,7 +2108,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                   <div style={{ textAlign:"right" }}>
                     <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2 }}>P&L</div>
                     <div style={{ fontSize:13, fontWeight:600, color: acct.totalPnL >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fmt(acct.totalPnL)}</div>
-                    {(acct.unrealizedPnL !== 0 || acct.wheelPremium !== 0 || acct.cashNet !== 0) && !acct.hasOverride && !prefs.compactBalances && (
+                    {(acct.unrealizedPnL !== 0 || acct.wheelPremium !== 0 || acct.cashNet !== 0 || acct.dividendIncome > 0) && !acct.hasOverride && !prefs.compactBalances && (
                       <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>
                         <span style={{ color: acct.realizedPnL >= 0 ? "rgba(74,222,128,0.6)" : "rgba(248,113,113,0.6)" }}>R: {fmt(acct.realizedPnL)}</span>
                         {acct.unrealizedPnL !== 0 && <>
@@ -2115,6 +2122,10 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                         {acct.cashNet !== 0 && <>
                           {" · "}
                           <span style={{ color:"rgba(234,179,8,0.7)" }}>C: {fmt(acct.cashNet)}</span>
+                        </>}
+                        {acct.dividendIncome > 0 && <>
+                          {" · "}
+                          <span style={{ color:"rgba(52,211,153,0.7)" }}>D: {fmt(acct.dividendIncome)}</span>
                         </>}
                       </div>
                     )}
@@ -4879,6 +4890,7 @@ function DividendModal({ onSave, onClose, editDiv, holdingTickers, accountBalanc
     type: "cash", dripPrice: "", dripShares: "",
     account: "", notes: ""
   });
+  const [customTicker, setCustomTicker] = useState(false);
 
   const set = (k) => (v) => setDiv(prev => {
     const next = { ...prev, [k]: typeof v === "object" && v.target ? v.target.value : v };
@@ -4930,16 +4942,18 @@ function DividendModal({ onSave, onClose, editDiv, holdingTickers, accountBalanc
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:12 }}>
           <div>
             <label style={labelStyle}>Ticker</label>
-            {tickerList.length > 0 ? (
-              <select value={div.ticker} onChange={e=>handleTickerChange(e.target.value)} style={{ ...inputStyle, appearance:"none", cursor:"pointer" }}>
+            {tickerList.length > 0 && !customTicker ? (
+              <select value={div.ticker} onChange={e=>{if(e.target.value==="_custom"){setCustomTicker(true);setDiv(p=>({...p,ticker:""}));}else{handleTickerChange(e.target.value);}}} style={{ ...inputStyle, appearance:"none", cursor:"pointer" }}>
                 <option value="" style={{ background:"var(--tp-sel-bg)" }}>Select...</option>
                 {tickerList.map(t => <option key={t} value={t} style={{ background:"var(--tp-sel-bg)" }}>{t} ({holdingTickers[t].shares} shares)</option>)}
                 <option value="_custom" style={{ background:"var(--tp-sel-bg)" }}>Other ticker...</option>
               </select>
             ) : (
-              <input type="text" value={div.ticker} onChange={e=>setDiv(p=>({...p, ticker:e.target.value.toUpperCase()}))} placeholder="AAPL" style={inputStyle} maxLength={10}/>
+              <div style={{ display:"flex", gap:6 }}>
+                <input type="text" value={div.ticker} onChange={e=>setDiv(p=>({...p, ticker:e.target.value.toUpperCase()}))} placeholder="AAPL" style={{ ...inputStyle, flex:1 }} maxLength={10} autoFocus/>
+                {tickerList.length > 0 && <button onClick={()=>{setCustomTicker(false);setDiv(p=>({...p,ticker:""}));}} style={{ padding:"4px 8px", borderRadius:6, border:"1px solid var(--tp-border-l)", background:"var(--tp-input)", color:"var(--tp-faint)", cursor:"pointer", fontSize:10, whiteSpace:"nowrap" }}>List</button>}
+              </div>
             )}
-            {div.ticker === "_custom" && <input type="text" value="" onChange={e=>setDiv(p=>({...p, ticker:e.target.value.toUpperCase()}))} placeholder="Enter ticker" style={{ ...inputStyle, marginTop:6 }} maxLength={10} autoFocus/>}
           </div>
           <div>
             <label style={labelStyle}>Payment Date</label>
@@ -8675,7 +8689,7 @@ function TradePulseApp({ user, onSignOut }) {
       </>}
 
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions}/>}
+        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} dividends={dividends}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
         {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} prefs={prefs}/>}
         {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} onStartWheel={(ticker, account, shares, avgPrice) => {
