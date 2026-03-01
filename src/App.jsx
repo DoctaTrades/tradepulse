@@ -264,7 +264,7 @@ const ASSET_TYPES = ["Stock", "Options", "Futures"];
 const DIRECTIONS = ["Long", "Short"];
 const STATUSES = ["Open", "Closed", "Partial"];
 const STOCK_STRATEGIES = ["Scalp", "Swing", "Day Trade", "Position", "Other"];
-const OPTIONS_STRATEGY_TYPES = ["Single Leg", "Vertical Spread", "Diagonal", "Calendar", "Butterfly", "Condor", "Straddle / Strangle", "Iron Condor", "Iron Butterfly", "Custom"];
+const OPTIONS_STRATEGY_TYPES = ["Single Leg", "Vertical Spread", "PMCC / Diagonal", "Calendar Press", "Butterfly", "Condor", "Straddle / Strangle", "Iron Condor", "Iron Butterfly", "Custom"];
 const GRADES = ["A+", "A", "B+", "B", "C", "D", "F"];
 const SECTORS = ["Technology","Healthcare","Financials","Consumer Discretionary","Industrials","Communication Services","Consumer Staples","Energy","Materials","Real Estate","Utilities","Crypto","ETFs / Indices","Commodities","Other"];
 
@@ -280,8 +280,8 @@ function defaultLegs(strategyType) {
   switch (strategyType) {
     case "Single Leg": return [emptyLeg("Buy","Call")];
     case "Vertical Spread": return [emptyLeg("Buy","Call"), emptyLeg("Sell","Call")];
-    case "Diagonal": return [emptyLeg("Buy","Call"), emptyLeg("Sell","Call")];
-    case "Calendar": return [emptyLeg("Buy","Call"), emptyLeg("Sell","Call")];
+    case "Diagonal": case "PMCC / Diagonal": return [emptyLeg("Buy","Call"), emptyLeg("Sell","Call")];
+    case "Calendar": case "Calendar Press": return [emptyLeg("Buy","Call"), emptyLeg("Sell","Call")];
     case "Butterfly": return [emptyLeg("Buy","Call"), { ...emptyLeg("Sell","Call"), contracts: "2" }, emptyLeg("Buy","Call")];
     case "Condor": return [emptyLeg("Buy","Call"), emptyLeg("Sell","Call"), emptyLeg("Sell","Call"), emptyLeg("Buy","Call")];
     case "Straddle / Strangle": return [emptyLeg("Buy","Call"), emptyLeg("Buy","Put")];
@@ -870,8 +870,8 @@ function TradeModal({ onSave, onClose, editTrade, futuresSettings, customFields,
 
   const pnlPreview = trade.status === "Closed" ? calcPnL(trade) : null;
   const isPos = pnlPreview > 0;
-  const isCalendar = trade.optionsStrategyType === "Calendar" || trade.optionsStrategyType === "Diagonal";
-  const lockedLegs = trade.optionsStrategyType !== "Custom" && trade.optionsStrategyType !== "Single Leg" && trade.optionsStrategyType !== "Calendar" && trade.optionsStrategyType !== "Vertical Spread" && trade.optionsStrategyType !== "Diagonal";
+  const isCalendar = trade.optionsStrategyType === "Calendar" || trade.optionsStrategyType === "Diagonal" || trade.optionsStrategyType === "PMCC / Diagonal" || trade.optionsStrategyType === "Calendar Press";
+  const lockedLegs = trade.optionsStrategyType !== "Custom" && trade.optionsStrategyType !== "Single Leg" && trade.optionsStrategyType !== "Calendar" && trade.optionsStrategyType !== "Vertical Spread" && trade.optionsStrategyType !== "Diagonal" && trade.optionsStrategyType !== "PMCC / Diagonal" && trade.optionsStrategyType !== "Calendar Press";
 
   return (
     <div className="tp-modal-overlay" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100, backdropFilter:"blur(3px)" }}>
@@ -919,11 +919,11 @@ function TradeModal({ onSave, onClose, editTrade, futuresSettings, customFields,
             </div>
             {isCalendar ? (
               trade.legs.map((leg, i) => (
-                <CalendarLegRow key={leg.id || i} leg={leg} index={i} onChange={updateLeg} showRolls={trade.optionsStrategyType === "Diagonal"}/>
+                <CalendarLegRow key={leg.id || i} leg={leg} index={i} onChange={updateLeg} showRolls={trade.optionsStrategyType === "Diagonal" || trade.optionsStrategyType === "PMCC / Diagonal"}/>
               ))
             ) : (
               trade.legs.map((leg, i) => (
-                <LegRow key={leg.id || i} leg={leg} index={i} onChange={updateLeg} onRemove={removeLeg} showRemove={trade.optionsStrategyType === "Custom" && trade.legs.length > 1} locked={lockedLegs} showRolls={trade.optionsStrategyType === "Calendar" || trade.optionsStrategyType === "Vertical Spread" || trade.optionsStrategyType === "Diagonal"}/>
+                <LegRow key={leg.id || i} leg={leg} index={i} onChange={updateLeg} onRemove={removeLeg} showRemove={trade.optionsStrategyType === "Custom" && trade.legs.length > 1} locked={lockedLegs} showRolls={trade.optionsStrategyType === "Calendar" || trade.optionsStrategyType === "Vertical Spread" || trade.optionsStrategyType === "Diagonal" || trade.optionsStrategyType === "PMCC / Diagonal" || trade.optionsStrategyType === "Calendar Press"}/>
               ))
             )}
             {/* Shared expiration + fees (hide shared expiration for Calendar) */}
@@ -2837,7 +2837,7 @@ function WheelTab({ wheelTrades, onSave, accounts, trades, onSaveTrades, prefs, 
 
       const strat = t.optionsStrategyType || "Unknown";
       const label = strat === "Vertical Spread" ? (t.legs[0]?.action === "Sell" ? "Credit Spread" : strat)
-        : strat === "Diagonal" ? "PMCC" : strat === "Calendar" ? "Cal Press" : strat === "Single Leg" ? (t.legs[0]?.action === "Sell" ? (t.legs[0]?.type === "Put" ? "CSP" : "CC") : strat) : strat;
+        : strat === "Diagonal" || strat === "PMCC / Diagonal" ? "PMCC" : strat === "Calendar" || strat === "Calendar Press" ? "Cal Press" : strat === "Single Leg" ? (t.legs[0]?.action === "Sell" ? (t.legs[0]?.type === "Put" ? "CSP" : "CC") : strat) : strat;
 
       if (!strategyMap[label]) strategyMap[label] = { trades:0, collected:0, kept:0, wins:0 };
       strategyMap[label].trades++; strategyMap[label].collected += collected; strategyMap[label].kept += kept;
@@ -3020,10 +3020,10 @@ function PremiumOverview({ data }) {
 
 function DiagonalPositionTracker({ trades, accountFilter, strategyType, label, description, prefs }) {
   const resets = prefs?.accountResets || {};
-  const stratFilter = strategyType === "PMCC" ? "Diagonal" : "Calendar";
+  const stratFilter = strategyType === "PMCC" ? ["Diagonal", "PMCC / Diagonal"] : ["Calendar", "Calendar Press"];
   const positions = useMemo(() => {
     const matching = trades.filter(t => {
-      if (t.assetType !== "Options" || t.optionsStrategyType !== stratFilter) return false;
+      if (t.assetType !== "Options" || !stratFilter.includes(t.optionsStrategyType)) return false;
       if (accountFilter !== "All" && t.account !== accountFilter) return false;
       if (t.account && resets[t.account]?.resetDate && t.date < resets[t.account].resetDate) return false;
       return true;
@@ -3064,7 +3064,7 @@ function DiagonalPositionTracker({ trades, accountFilter, strategyType, label, d
       <div style={{ textAlign:"center", padding:"50px 20px", color:"var(--tp-faint)" }}>
         <Layers size={36} style={{ margin:"0 auto 12px", opacity:0.3 }}/>
         <p style={{ fontSize:13, margin:"0 0 6px" }}>No {label} positions found.</p>
-        <p style={{ fontSize:11, color:"var(--tp-faintest)", margin:0 }}>Log a trade with the "{stratFilter}" strategy type to see it here.</p>
+        <p style={{ fontSize:11, color:"var(--tp-faintest)", margin:0 }}>Log a trade with the "{stratFilter.join(" or ")}" strategy type to see it here.</p>
       </div>
     </div>
   );
@@ -4722,7 +4722,7 @@ function HoldingsTab({ trades, accountBalances, onEditTrade, theme, dividends, o
                               <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2 }}>
                                 <span style={{ fontSize:17, fontWeight:700, color:"var(--tp-text)" }}>{h.ticker}</span>
                                 {hasStocks && <span style={{ fontSize:9, fontWeight:600, color: h.netDirection==="Long"?"#60a5fa":"#f472b6", background: h.netDirection==="Long"?"rgba(96,165,250,0.12)":"rgba(244,114,182,0.12)", padding:"2px 7px", borderRadius:4 }}>{h.netDirection}</span>}
-                                {h.stocks.some(s => s.source === "wheel-assignment") && <span style={{ fontSize:9, fontWeight:600, color:"#eab308", background:"rgba(234,179,8,0.12)", padding:"2px 7px", borderRadius:4 }}>WHEEL</span>}
+                                {h.stockTrades.some(s => s.source === "wheel-assignment") && <span style={{ fontSize:9, fontWeight:600, color:"#eab308", background:"rgba(234,179,8,0.12)", padding:"2px 7px", borderRadius:4 }}>WHEEL</span>}
                                 {hasOptions && <span style={{ fontSize:9, fontWeight:600, color:"#a78bfa", background:"rgba(167,139,250,0.12)", padding:"2px 7px", borderRadius:4 }}>OPT ×{h.options.length}</span>}
                                 {hasFutures && <span style={{ fontSize:9, fontWeight:600, color:"#eab308", background:"rgba(234,179,8,0.12)", padding:"2px 7px", borderRadius:4 }}>FUT</span>}
                               </div>
