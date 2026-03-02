@@ -2793,7 +2793,7 @@ function Watchlist({ watchlists, onSave, onPromoteTrade }) {
 }
 
 // ─── WHEEL TAB ────────────────────────────────────────────────────────────────
-function WheelTab({ wheelTrades, onSave, accounts, trades, onSaveTrades, prefs, accountBalances }) {
+function WheelTab({ wheelTrades, onSave, accounts, trades, onSaveTrades, prefs, accountBalances, onEditTrade }) {
   const [subTab, setSubTab] = useState("overview");
   const [accountFilter, setAccountFilter] = useState("All");
   const allAccounts = useMemo(() => [...new Set([...(accounts||[]), ...wheelTrades.map(t=>t.account).filter(Boolean)])], [accounts, wheelTrades]);
@@ -2919,9 +2919,9 @@ function WheelTab({ wheelTrades, onSave, accounts, trades, onSaveTrades, prefs, 
 
       {subTab === "overview" && <PremiumOverview data={overviewData}/>}
       {subTab === "wheel" && <WheelSubTab wheelTrades={wheelTrades} onSave={onSave} accounts={accounts} trades={trades} onSaveTrades={onSaveTrades} accountFilter={accountFilter}/>}
-      {subTab === "pmcc" && <DiagonalPositionTracker trades={trades} accountFilter={accountFilter} strategyType="PMCC" label="Poor Man's Covered Call" description="Long LEAP call + short calls sold for income. Log as 'Diagonal' strategy" prefs={prefs}/>}
-      {subTab === "calpress" && <DiagonalPositionTracker trades={trades} accountFilter={accountFilter} strategyType="CalPress" label="Calendar Press" description="Long dated OTM option + short weeklies sold for premium. Log as 'Calendar' strategy" prefs={prefs}/>}
-      {subTab === "spreads" && <SpreadsSubTab trades={trades} accountFilter={accountFilter} prefs={prefs}/>}
+      {subTab === "pmcc" && <DiagonalPositionTracker trades={trades} accountFilter={accountFilter} strategyType="PMCC" label="Poor Man's Covered Call" description="Long LEAP call + short calls sold for income. Log as 'Diagonal' strategy" prefs={prefs} onEditTrade={onEditTrade}/>}
+      {subTab === "calpress" && <DiagonalPositionTracker trades={trades} accountFilter={accountFilter} strategyType="CalPress" label="Calendar Press" description="Long dated OTM option + short weeklies sold for premium. Log as 'Calendar' strategy" prefs={prefs} onEditTrade={onEditTrade}/>}
+      {subTab === "spreads" && <SpreadsSubTab trades={trades} accountFilter={accountFilter} prefs={prefs} onEditTrade={onEditTrade}/>}
     </div>
   );
 }
@@ -3031,7 +3031,7 @@ function PremiumOverview({ data }) {
   );
 }
 
-function DiagonalPositionTracker({ trades, accountFilter, strategyType, label, description, prefs }) {
+function DiagonalPositionTracker({ trades, accountFilter, strategyType, label, description, prefs, onEditTrade }) {
   const resets = prefs?.accountResets || {};
   const stratFilter = strategyType === "PMCC" ? ["Diagonal", "PMCC / Diagonal"] : ["Calendar", "Calendar Press"];
   const positions = useMemo(() => {
@@ -3112,15 +3112,31 @@ function DiagonalPositionTracker({ trades, accountFilter, strategyType, label, d
             <div style={{ marginTop:12 }}>
               <div style={{ fontSize:9, color:"var(--tp-faintest)", textTransform:"uppercase", letterSpacing:0.5, marginBottom:6 }}>Trade History</div>
               {pos.trades.sort((a,b)=>new Date(b.date)-new Date(a.date)).map(t => {
-                const pnl = calcPnL(t); const buyLeg = t.legs?.find(l=>l.action==="Buy"); const sellLeg = t.legs?.find(l=>l.action==="Sell");
-                return (<div key={t.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", background:"var(--tp-card)", borderRadius:6, marginBottom:3, fontSize:11 }}>
+                const buyLeg = t.legs?.find(l=>l.action==="Buy"); const sellLeg = t.legs?.find(l=>l.action==="Sell");
+                // Compute premium-aware P&L: anchor cost vs all sell income
+                let tradePnL = null;
+                if (t.legs?.length) {
+                  let cost = 0, income = 0;
+                  t.legs.forEach(leg => {
+                    const entry = parseFloat(leg.entryPremium)||0, contracts = parseInt(leg.contracts)||1;
+                    if (leg.action === "Buy") { cost += entry * contracts * 100; }
+                    else {
+                      const partials = leg.partialCloses || [];
+                      if (partials.length > 0) partials.forEach(pc => income += (entry - (parseFloat(pc.exitPremium)||0)) * (parseInt(pc.qty)||1) * 100);
+                      else { const exit = parseFloat(leg.exitPremium); income += !isNaN(exit) ? (entry - exit) * contracts * 100 : entry * contracts * 100; }
+                      if (leg.rolls?.length) leg.rolls.forEach(r => { income += ((parseFloat(r.sellPremium)||0) - (parseFloat(r.buybackPremium)||0)) * (parseInt(r.contracts)||contracts) * 100; });
+                    }
+                  });
+                  tradePnL = income - cost - (parseFloat(t.fees)||0);
+                }
+                return (<div key={t.id} onClick={()=>onEditTrade && onEditTrade(t)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", background:"var(--tp-card)", borderRadius:6, marginBottom:3, fontSize:11, cursor:onEditTrade?"pointer":"default", transition:"background 0.15s" }} onMouseEnter={e=>{if(onEditTrade)e.currentTarget.style.background="rgba(99,102,241,0.1)"}} onMouseLeave={e=>e.currentTarget.style.background="var(--tp-card)"}>
                   <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                     <span style={{ color:"var(--tp-faintest)", fontFamily:"'JetBrains Mono', monospace" }}>{t.date}</span>
                     {buyLeg && <span style={{ color:"#60a5fa" }}>B {buyLeg.strike}{buyLeg.type[0]} @{buyLeg.entryPremium}</span>}
                     {sellLeg && <span style={{ color:"#f87171" }}>S {sellLeg.strike}{sellLeg.type[0]} @{sellLeg.entryPremium}</span>}
                     {sellLeg?.rolls?.length > 0 && <span style={{ color:"#eab308", fontSize:9 }}>({sellLeg.rolls.length} roll{sellLeg.rolls.length!==1?"s":""})</span>}
                   </div>
-                  <span style={{ fontWeight:600, color:pnl>0?"#4ade80":pnl<0?"#f87171":"var(--tp-faint)", fontFamily:"'JetBrains Mono', monospace" }}>{pnl!==null?`${pnl>=0?"+":""}$${pnl.toFixed(0)}`:"Open"}</span>
+                  <span style={{ fontWeight:600, color:tradePnL>0?"#4ade80":tradePnL<0?"#f87171":"var(--tp-faint)", fontFamily:"'JetBrains Mono', monospace" }}>{tradePnL!==null?`${tradePnL>=0?"+":""}$${tradePnL.toFixed(0)}`:"—"}</span>
                 </div>);
               })}
             </div>
@@ -3131,7 +3147,7 @@ function DiagonalPositionTracker({ trades, accountFilter, strategyType, label, d
   );
 }
 
-function SpreadsSubTab({ trades, accountFilter, prefs }) {
+function SpreadsSubTab({ trades, accountFilter, prefs, onEditTrade }) {
   const resets = prefs?.accountResets || {};
   const spreadTrades = useMemo(() => trades.filter(t => {
     if (t.assetType !== "Options" || t.optionsStrategyType !== "Vertical Spread") return false;
@@ -3150,7 +3166,7 @@ function SpreadsSubTab({ trades, accountFilter, prefs }) {
         const pnl = calcPnL(t);
         const netCollected = t.legs.reduce((s,l) => s + (l.action==="Sell"?1:-1) * (parseFloat(l.entryPremium)||0) * (parseInt(l.contracts)||1) * 100, 0);
         return (
-          <div key={t.id} style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 18px", marginBottom:8 }}>
+          <div key={t.id} onClick={()=>onEditTrade && onEditTrade(t)} style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:10, padding:"14px 18px", marginBottom:8, cursor:onEditTrade?"pointer":"default", transition:"border-color 0.15s" }} onMouseEnter={e=>{if(onEditTrade)e.currentTarget.style.borderColor="rgba(99,102,241,0.35)"}} onMouseLeave={e=>e.currentTarget.style.borderColor="var(--tp-panel-b)"}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                 <span style={{ fontSize:15, fontWeight:700, color:"var(--tp-text)" }}>{t.ticker}</span>
@@ -9151,7 +9167,7 @@ function TradePulseApp({ user, onSignOut }) {
         }}/>}
         {tab==="review" && <ReviewTab trades={trades} accountBalances={accountBalances} theme={theme} prefs={prefs} journal={journal} goals={goals} playbooks={playbooks}/>}
         {tab==="playbook" && <PlaybookTab playbooks={playbooks} onSave={setPlaybooks} trades={trades} theme={theme}/>}
-        {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} trades={trades} onSaveTrades={setTrades} prefs={prefs} accountBalances={accountBalances}/>}
+        {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} trades={trades} onSaveTrades={setTrades} prefs={prefs} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}}/>}
         {tab==="watchlist" && <Watchlist watchlists={watchlists} onSave={setWatchlists} onPromoteTrade={promoteTrade} theme={theme}/>}
         {tab==="log" && <TradeLog trades={trades} onEdit={t=>{setEditingTrade(t);setShowTradeModal(true);}} onDelete={handleTradeDelete} theme={theme} prefs={prefs}/>}
         {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme} wheelTrades={wheelTrades} cashTransactions={cashTransactions} onSaveCashTransactions={setCashTransactions}/>}
