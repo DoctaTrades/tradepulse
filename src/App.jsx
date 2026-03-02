@@ -298,6 +298,7 @@ function calcPnL(trade) {
 
   // Multi-leg options P&L
   if (trade.assetType === "Options" && trade.legs && trade.legs.length > 0) {
+    const isCalDiag = ["Calendar","Calendar Press","Diagonal","PMCC / Diagonal"].includes(trade.optionsStrategyType);
     let total = 0; let hasData = false;
     for (const leg of trade.legs) {
       const entry = parseFloat(leg.entryPremium);
@@ -321,6 +322,10 @@ function calcPnL(trade) {
         if (!isNaN(entry) && !isNaN(exit)) {
           hasData = true;
           total += sign * (exit - entry) * contracts * 100;
+        } else if (isCalDiag && !isNaN(entry)) {
+          hasData = true;
+          if (leg.action === "Buy") { total -= entry * contracts * 100; }
+          else { total += entry * contracts * 100; }
         }
       }
       
@@ -3048,12 +3053,16 @@ function DiagonalPositionTracker({ trades, accountFilter, strategyType, label, d
       grouped[key].trades.push(t);
     });
     return Object.values(grouped).map(g => {
-      let anchorCost=0, totalPremCollected=0, totalPremKept=0, shortLegs=0;
+      let anchorCost=0, anchorExit=0, totalPremCollected=0, totalPremKept=0, shortLegs=0;
       g.trades.forEach(t => {
         (t.legs||[]).forEach(leg => {
           const entry = parseFloat(leg.entryPremium)||0, contracts = parseInt(leg.contracts)||1;
           const partials = leg.partialCloses||[];
-          if (leg.action === "Buy") { anchorCost += entry * contracts * 100; }
+          if (leg.action === "Buy") {
+            anchorCost += entry * contracts * 100;
+            const exitP = parseFloat(leg.exitPremium);
+            if (!isNaN(exitP)) anchorExit += exitP * contracts * 100;
+          }
           else {
             shortLegs++; totalPremCollected += entry * contracts * 100;
             if (partials.length > 0) partials.forEach(pc => totalPremKept += (entry - (parseFloat(pc.exitPremium)||0)) * (parseInt(pc.qty)||1) * 100);
@@ -3065,8 +3074,9 @@ function DiagonalPositionTracker({ trades, accountFilter, strategyType, label, d
           }
         });
       });
-      const roi = anchorCost > 0 ? (totalPremKept/anchorCost)*100 : 0;
-      return { ...g, anchorCost, totalPremCollected, totalPremKept, shortLegs, roi, netPosition:totalPremKept-anchorCost };
+      const netAnchorCost = anchorCost - anchorExit;
+      const roi = netAnchorCost > 0 ? (totalPremKept/netAnchorCost)*100 : anchorCost > 0 ? (totalPremKept/anchorCost)*100 : 0;
+      return { ...g, anchorCost, anchorExit, totalPremCollected, totalPremKept, shortLegs, roi, netPosition:totalPremKept-anchorCost+anchorExit };
     }).sort((a,b) => b.totalPremKept - a.totalPremKept);
   }, [trades, accountFilter, stratFilter, resets]);
 
@@ -3102,7 +3112,7 @@ function DiagonalPositionTracker({ trades, accountFilter, strategyType, label, d
               </div>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:10 }}>
-              {[{l:"Anchor Cost",v:`-$${pos.anchorCost.toFixed(0)}`,c:"#f87171"},{l:"Prem Collected",v:`$${pos.totalPremCollected.toFixed(0)}`,c:"var(--tp-muted)"},{l:"Net Kept",v:`$${pos.totalPremKept.toFixed(0)}`,c:"#4ade80"},{l:"ROI on Anchor",v:`${pos.roi.toFixed(0)}%`,c:pos.roi>=100?"#4ade80":"#eab308"}].map((s,i) => (
+              {[{l:pos.anchorExit>0?"Net Anchor":"Anchor Cost",v:pos.anchorExit>0?(pos.anchorExit>=pos.anchorCost?"+":"-")+`$${Math.abs(pos.anchorCost-pos.anchorExit).toFixed(0)}`:`-$${pos.anchorCost.toFixed(0)}`,c:pos.anchorExit>=pos.anchorCost?"#4ade80":"#f87171"},{l:"Prem Collected",v:`$${pos.totalPremCollected.toFixed(0)}`,c:"var(--tp-muted)"},{l:"Net Kept",v:`$${pos.totalPremKept.toFixed(0)}`,c:"#4ade80"},{l:"ROI on Anchor",v:`${pos.roi.toFixed(0)}%`,c:pos.roi>=100?"#4ade80":"#eab308"}].map((s,i) => (
                 <div key={i} style={{ background:"var(--tp-card)", borderRadius:8, padding:"10px 12px", textAlign:"center" }}>
                   <div style={{ fontSize:8, color:"var(--tp-faintest)", textTransform:"uppercase", marginBottom:3 }}>{s.l}</div>
                   <div style={{ fontSize:14, fontWeight:700, color:s.c, fontFamily:"'JetBrains Mono', monospace" }}>{s.v}</div>
@@ -3119,7 +3129,7 @@ function DiagonalPositionTracker({ trades, accountFilter, strategyType, label, d
                   let cost = 0, income = 0;
                   t.legs.forEach(leg => {
                     const entry = parseFloat(leg.entryPremium)||0, contracts = parseInt(leg.contracts)||1;
-                    if (leg.action === "Buy") { cost += entry * contracts * 100; }
+                    if (leg.action === "Buy") { cost += entry * contracts * 100; const exitP = parseFloat(leg.exitPremium); if (!isNaN(exitP)) cost -= exitP * contracts * 100; }
                     else {
                       const partials = leg.partialCloses || [];
                       if (partials.length > 0) partials.forEach(pc => income += (entry - (parseFloat(pc.exitPremium)||0)) * (parseInt(pc.qty)||1) * 100);
