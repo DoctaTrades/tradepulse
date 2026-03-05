@@ -347,14 +347,44 @@ function calcPnL(trade) {
 
   // Futures
   if (trade.assetType === "Futures") {
-    if (!trade.entryPrice || !trade.exitPrice || !trade.quantity) return null;
-    const entry = parseFloat(trade.entryPrice), exit = parseFloat(trade.exitPrice), qty = parseFloat(trade.quantity);
+    const entry = parseFloat(trade.entryPrice);
+    const totalQty = parseFloat(trade.quantity);
     const tickSize = parseFloat(trade.tickSize) || 0.25;
     const tickValue = parseFloat(trade.tickValue) || 1;
-    if (isNaN(entry) || isNaN(exit) || isNaN(qty)) return null;
-    const priceDiff = trade.direction === "Long" ? (exit - entry) : (entry - exit);
+    if (isNaN(entry) || isNaN(totalQty) || totalQty <= 0) return null;
+    const dir = trade.direction === "Long" ? 1 : -1;
+    const scaleOuts = trade.futuresScaleOuts || [];
+    
+    if (scaleOuts.length > 0) {
+      let total = 0; let closedQty = 0;
+      scaleOuts.forEach(so => {
+        const soQty = parseFloat(so.qty) || 0;
+        const soExit = parseFloat(so.exitPrice);
+        if (!isNaN(soExit) && soQty > 0) {
+          const priceDiff = dir * (soExit - entry);
+          total += (priceDiff / tickSize) * tickValue * soQty;
+          closedQty += soQty;
+        }
+      });
+      // Remaining contracts use main exit price if set
+      const remaining = totalQty - closedQty;
+      const mainExit = parseFloat(trade.exitPrice);
+      if (remaining > 0 && !isNaN(mainExit)) {
+        const priceDiff = dir * (mainExit - entry);
+        total += (priceDiff / tickSize) * tickValue * remaining;
+      } else if (remaining > 0) {
+        // Still open contracts, only return P&L from closed scale-outs
+        if (closedQty === 0) return null;
+      }
+      return parseFloat((total - fees).toFixed(2));
+    }
+    
+    // No scale-outs: original single-exit logic
+    const exit = parseFloat(trade.exitPrice);
+    if (isNaN(entry) || isNaN(exit)) return null;
+    const priceDiff = dir * (exit - entry);
     const numTicks = priceDiff / tickSize;
-    const profit = numTicks * tickValue * qty;
+    const profit = numTicks * tickValue * totalQty;
     return parseFloat((profit - fees).toFixed(2));
   }
 
@@ -449,7 +479,7 @@ const emptyTrade = (prefill = {}) => ({
   quantity: "", fees: "0", pnl: null, notes: "", grade: "", entryTime: "", exitTime: "", exitDate: "",
   stopLoss: "", takeProfit: "",
   optionsStrategyType: "Single Leg", legs: [emptyLeg("Buy","Call")],
-  futuresContract: "", tickSize: "", tickValue: "",
+  futuresContract: "", tickSize: "", tickValue: "", futuresScaleOuts: [],
   // New customizable fields
   emotions: [], account: "", timeframe: "", tradeStrategy: "",
   screenshots: [], playbook: "",
@@ -997,6 +1027,46 @@ function TradeModal({ onSave, onClose, editTrade, futuresSettings, customFields,
               <Input label="Stop Loss" value={trade.stopLoss} onChange={set("stopLoss")} type="number" placeholder="e.g. 5800"/>
               <Input label="Take Profit" value={trade.takeProfit} onChange={set("takeProfit")} type="number" placeholder="e.g. 5850"/>
             </div>
+            {/* Scale-Out Section */}
+            {(parseInt(trade.quantity)||0) > 1 && (
+              <div style={{ background:"rgba(99,102,241,0.07)", borderRadius:10, padding:"14px 16px", marginBottom:12, border:"1px solid rgba(99,102,241,0.18)" }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <span style={{ fontSize:11, color:"#a5b4fc", fontWeight:600, textTransform:"uppercase", letterSpacing:0.8 }}>Scale-Out Exits</span>
+                    {(trade.futuresScaleOuts||[]).length > 0 && <span style={{ fontSize:10, color:"var(--tp-faint)" }}>({(trade.futuresScaleOuts||[]).reduce((s,so)=>s+(parseInt(so.qty)||0),0)} of {trade.quantity} contracts)</span>}
+                  </div>
+                  <button onClick={()=>setTrade(p=>({...p, futuresScaleOuts:[...(p.futuresScaleOuts||[]),{id:Date.now()+Math.random(), qty:"1", exitPrice:"", date:new Date().toISOString().split("T")[0]}]}))} style={{ padding:"3px 8px", borderRadius:4, border:"1px solid rgba(99,102,241,0.3)", background:"rgba(99,102,241,0.1)", color:"#a5b4fc", cursor:"pointer", fontSize:10, fontWeight:500 }}>+ Add Exit</button>
+                </div>
+                {(trade.futuresScaleOuts||[]).length > 0 && (
+                  <div style={{ display:"grid", gap:6 }}>
+                    <div style={{ display:"grid", gridTemplateColumns:"70px 1fr 1fr 60px 24px", gap:8, padding:"0 4px", fontSize:8, color:"var(--tp-faintest)", textTransform:"uppercase", letterSpacing:0.5 }}>
+                      <span>Date</span><span>Qty</span><span>Exit Price</span><span style={{textAlign:"right"}}>P&L</span><span/>
+                    </div>
+                    {(trade.futuresScaleOuts||[]).map((so, idx) => {
+                      const soQty = parseFloat(so.qty)||0, soExit = parseFloat(so.exitPrice);
+                      const entry = parseFloat(trade.entryPrice)||0, ts = parseFloat(trade.tickSize)||0.25, tv = parseFloat(trade.tickValue)||1;
+                      const dir = trade.direction === "Long" ? 1 : -1;
+                      const soPnL = (!isNaN(soExit) && soQty > 0 && entry > 0) ? (dir * (soExit - entry) / ts) * tv * soQty : null;
+                      return (
+                        <div key={so.id} style={{ display:"grid", gridTemplateColumns:"70px 1fr 1fr 60px 24px", gap:8, alignItems:"center", background:"rgba(0,0,0,0.2)", borderRadius:6, padding:"8px 8px" }}>
+                          <input type="date" value={so.date||""} onChange={e=>setTrade(p=>({...p,futuresScaleOuts:p.futuresScaleOuts.map((s,i)=>i===idx?{...s,date:e.target.value}:s)}))} style={{ padding:"5px 4px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:4, color:"var(--tp-text)", fontSize:10, outline:"none", boxSizing:"border-box" }}/>
+                          <input type="number" value={so.qty} onChange={e=>setTrade(p=>({...p,futuresScaleOuts:p.futuresScaleOuts.map((s,i)=>i===idx?{...s,qty:e.target.value}:s)}))} placeholder="1" min="1" style={{ padding:"5px 6px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:4, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box", textAlign:"center" }}/>
+                          <input type="number" value={so.exitPrice} onChange={e=>setTrade(p=>({...p,futuresScaleOuts:p.futuresScaleOuts.map((s,i)=>i===idx?{...s,exitPrice:e.target.value}:s)}))} placeholder="Exit $" step="any" style={{ padding:"5px 6px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:4, color:"var(--tp-text)", fontSize:11, outline:"none", boxSizing:"border-box" }}/>
+                          <div style={{ fontSize:11, fontFamily:"'JetBrains Mono', monospace", color:soPnL>0?"#4ade80":soPnL<0?"#f87171":"var(--tp-faintest)", textAlign:"right" }}>{soPnL!==null?`${soPnL>=0?"+":""}$${soPnL.toFixed(0)}`:"—"}</div>
+                          <button onClick={()=>setTrade(p=>({...p,futuresScaleOuts:p.futuresScaleOuts.filter((_,i)=>i!==idx)}))} style={{ background:"none", border:"none", color:"var(--tp-faint)", cursor:"pointer", padding:2 }} onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="var(--tp-faint)"}><X size={12}/></button>
+                        </div>
+                      );
+                    })}
+                    {(() => {
+                      const closedQty = (trade.futuresScaleOuts||[]).reduce((s,so)=>s+(parseInt(so.qty)||0),0);
+                      const remaining = (parseInt(trade.quantity)||0) - closedQty;
+                      return remaining > 0 ? <div style={{ fontSize:10, color:"var(--tp-faintest)", padding:"4px 8px" }}>{remaining} contract{remaining!==1?"s":""} remaining — {trade.exitPrice ? `exit at ${trade.exitPrice}` : "use Exit Price field above or add another scale-out"}</div> : remaining < 0 ? <div style={{ fontSize:10, color:"#f87171", padding:"4px 8px" }}>Scale-out qty exceeds total contracts</div> : null;
+                    })()}
+                  </div>
+                )}
+                {(trade.futuresScaleOuts||[]).length === 0 && <div style={{ fontSize:10, color:"var(--tp-faintest)" }}>Add exits to log partial closes at different prices. Remaining contracts use the main Exit Price.</div>}
+              </div>
+            )}
           </>
         )}
 
