@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart, Cell } from "recharts";
-import { TrendingUp, TrendingDown, Plus, X, BookOpen, List, Home, Filter, Award, Target, Activity, Trash2, Eye, ChevronDown, ChevronUp, ChevronRight, Crosshair, Calculator, RefreshCw, Settings, Calendar, DollarSign, BarChart3, Percent, ChevronLeft, Layers, Zap, Camera, Image, CalendarDays, Clipboard, Shield, AlertTriangle, Lightbulb, SkipForward, SkipBack, Upload, Download, Check, FileText, Briefcase, Sun, Moon, Menu, Clock } from "lucide-react";
+import { TrendingUp, TrendingDown, Plus, X, BookOpen, List, Home, Filter, Award, Target, Activity, Trash2, Eye, EyeOff, ChevronDown, ChevronUp, ChevronRight, Crosshair, Calculator, RefreshCw, Settings, Calendar, DollarSign, BarChart3, Percent, ChevronLeft, Layers, Zap, Camera, Image, CalendarDays, Clipboard, Shield, AlertTriangle, Lightbulb, SkipForward, SkipBack, Upload, Download, Check, FileText, Briefcase, Sun, Moon, Menu, Clock } from "lucide-react";
 
 // ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
 import { createClient } from "@supabase/supabase-js";
@@ -1859,7 +1859,7 @@ function RiskCalculator({ theme, accountBalances, futuresSettings, customFields 
   );
 }
 
-function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, wheelTrades, cashTransactions, dividends }) {
+function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, wheelTrades, cashTransactions, dividends, hideBalances, setHideBalances }) {
   const widgetConfig = useMemo(() => {
     if (!dashWidgets || dashWidgets.length === 0) return DEFAULT_DASH_WIDGETS;
     const merged = [];
@@ -2168,6 +2168,12 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
       {/* ═══════ ACCOUNT BALANCE CARDS ═══════ */}
       {wVis("accounts") && accountSummaries.length > 0 && (
         <div style={{ marginBottom:18, order:wOrder("accounts") }}>
+          <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:6 }}>
+            <button onClick={()=>setHideBalances(!hideBalances)} style={{ background:"none", border:"1px solid var(--tp-border-l)", borderRadius:6, padding:"4px 8px", cursor:"pointer", display:"flex", alignItems:"center", gap:5, color:hideBalances?"#a5b4fc":"var(--tp-faint)", fontSize:10, transition:"all 0.15s" }} title={hideBalances?"Show balances":"Hide balances"}>
+              {hideBalances ? <EyeOff size={12}/> : <Eye size={12}/>}
+              {hideBalances ? "Hidden" : "Hide"}
+            </button>
+          </div>
           <div style={{ display:"grid", gridTemplateColumns:`repeat(auto-fit, minmax(${accountSummaries.length === 1 ? "300px" : "220px"}, 1fr))`, gap:10 }}>
             {(accountFilter === "All" ? accountSummaries : accountSummaries.filter(a => a.name === accountFilter)).map(acct => (
               <div key={acct.name} style={{
@@ -2183,20 +2189,20 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
                   <div style={{ fontSize:13, fontWeight:700, color:theme.text }}>{acct.name}</div>
                   <span style={{ fontSize:9, fontWeight:600, color: acct.returnPct >= 0 ? "#4ade80" : "#f87171", background: acct.returnPct >= 0 ? "rgba(74,222,128,0.1)" : "rgba(248,113,113,0.1)", padding:"2px 8px", borderRadius:10, fontFamily:"'JetBrains Mono', monospace" }}>
-                    {acct.returnPct >= 0 ? "+" : ""}{(isNaN(acct.returnPct) ? 0 : acct.returnPct).toFixed(1)}%
+                    {hideBalances ? "•••" : `${acct.returnPct >= 0 ? "+" : ""}${(isNaN(acct.returnPct) ? 0 : acct.returnPct).toFixed(1)}%`}
                   </span>
                 </div>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"end" }}>
                   <div>
                     <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2 }}>Current Balance {acct.hasOverride && <span style={{ color:"#eab308" }}>(Override)</span>}</div>
                     <div style={{ fontSize:20, fontWeight:700, color: acct.currentBal >= acct.startBal ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>
-                      ${(isNaN(acct.currentBal) ? 0 : acct.currentBal).toLocaleString("en-US",{minimumFractionDigits:2, maximumFractionDigits:2})}
+                      {hideBalances ? "$•••••" : `$${(isNaN(acct.currentBal) ? 0 : acct.currentBal).toLocaleString("en-US",{minimumFractionDigits:2, maximumFractionDigits:2})}`}
                     </div>
                   </div>
                   <div style={{ textAlign:"right" }}>
                     <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2 }}>P&L</div>
-                    <div style={{ fontSize:13, fontWeight:600, color: acct.totalPnL >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{fmt(acct.totalPnL)}</div>
-                    {(acct.unrealizedPnL !== 0 || acct.wheelPremium !== 0 || acct.cashNet !== 0 || acct.dividendIncome > 0) && !acct.hasOverride && !prefs.compactBalances && (
+                    <div style={{ fontSize:13, fontWeight:600, color: acct.totalPnL >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{hideBalances ? "$•••••" : fmt(acct.totalPnL)}</div>
+                    {!hideBalances && (acct.unrealizedPnL !== 0 || acct.wheelPremium !== 0 || acct.cashNet !== 0 || acct.dividendIncome > 0) && !acct.hasOverride && !prefs.compactBalances && (
                       <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>
                         <span style={{ color: acct.realizedPnL >= 0 ? "rgba(74,222,128,0.6)" : "rgba(248,113,113,0.6)" }}>R: {fmt(acct.realizedPnL)}</span>
                         {acct.unrealizedPnL !== 0 && <>
@@ -2217,7 +2223,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                         </>}
                       </div>
                     )}
-                    <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>started ${acct.startBal.toLocaleString()} · {acct.tradeCount} trades</div>
+                    <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>{hideBalances ? "started $••••• · " : `started $${acct.startBal.toLocaleString()} · `}{acct.tradeCount} trades</div>
                   </div>
                 </div>
               </div>
@@ -7320,7 +7326,7 @@ function SetupGuide() {
   );
 }
 
-function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCustomFields, accountBalances, onSaveAccountBalances, trades, onSaveTrades, prefs, onSavePrefs, theme, wheelTrades, cashTransactions, onSaveCashTransactions }) {
+function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCustomFields, accountBalances, onSaveAccountBalances, trades, onSaveTrades, prefs, onSavePrefs, theme, wheelTrades, cashTransactions, onSaveCashTransactions, hideBalances }) {
   const [section, setSection] = useState("accounts"); // accounts | appearance | futures | custom | importexport | ai
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingPreset, setEditingPreset] = useState(null);
@@ -7350,7 +7356,7 @@ function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCusto
         <button onClick={()=>setSection("ai")} style={{ padding:"8px 16px", border:"none", background:section==="ai"?"rgba(99,102,241,0.15)":"transparent", color:section==="ai"?"#a5b4fc":"#6b7080", cursor:"pointer", fontSize:13, fontWeight:600, borderRadius:"6px 6px 0 0", borderBottom:section==="ai"?"2px solid #6366f1":"none", whiteSpace:"nowrap", flexShrink:0 }}>AI Integration</button>
       </div>
 
-      {section === "accounts" && <AccountBalancesManager accountBalances={accountBalances} onSave={onSaveAccountBalances} customFields={customFields} trades={trades} prefs={prefs} onSavePrefs={onSavePrefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} onSaveCashTransactions={onSaveCashTransactions}/>}
+      {section === "accounts" && <AccountBalancesManager accountBalances={accountBalances} onSave={onSaveAccountBalances} customFields={customFields} trades={trades} prefs={prefs} onSavePrefs={onSavePrefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} onSaveCashTransactions={onSaveCashTransactions} hideBalances={hideBalances}/>}
 
       {section === "futures" && (
         <div>
@@ -8476,7 +8482,7 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
 }
 
 // ─── ACCOUNT BALANCES MANAGER ────────────────────────────────────────────────
-function AccountBalancesManager({ accountBalances, onSave, customFields, trades, prefs, onSavePrefs, wheelTrades, cashTransactions, onSaveCashTransactions }) {
+function AccountBalancesManager({ accountBalances, onSave, customFields, trades, prefs, onSavePrefs, wheelTrades, cashTransactions, onSaveCashTransactions, hideBalances }) {
   const [addingAccount, setAddingAccount] = useState(false);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountBalance, setNewAccountBalance] = useState("");
@@ -8603,10 +8609,10 @@ function AccountBalancesManager({ accountBalances, onSave, customFields, trades,
                 ) : (
                   <div>
                     <div style={{ fontSize:10, color:"var(--tp-faint)", textTransform:"uppercase", letterSpacing:0.6, marginBottom:4 }}>Starting Balance</div>
-                    <div style={{ fontSize:22, fontWeight:700, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>${balance.toLocaleString("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 })}</div>
+                    <div style={{ fontSize:22, fontWeight:700, color:"#4ade80", fontFamily:"'JetBrains Mono', monospace" }}>{hideBalances ? "$•••••" : `$${balance.toLocaleString("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 })}`}</div>
                     {(prefs?.accountResets?.[name]) && (
                       <div style={{ marginTop:6, fontSize:10, color:"#eab308", background:"rgba(234,179,8,0.08)", border:"1px solid rgba(234,179,8,0.15)", borderRadius:6, padding:"5px 8px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                        <span>Reset {prefs.accountResets[name].resetDate} → ${parseFloat(prefs.accountResets[name].resetBalance).toLocaleString()}{prefs.accountResets[name].note ? ` · ${prefs.accountResets[name].note}` : ""}</span>
+                        <span>Reset {prefs.accountResets[name].resetDate} → {hideBalances ? "$•••••" : `$${parseFloat(prefs.accountResets[name].resetBalance).toLocaleString()}`}{!hideBalances && prefs.accountResets[name].note ? ` · ${prefs.accountResets[name].note}` : ""}</span>
                         <button onClick={()=>onSavePrefs(p=>{const r={...(p.accountResets||{})}; delete r[name]; return {...p, accountResets:r};})} style={{ background:"none", border:"none", color:"#eab308", cursor:"pointer", padding:0, fontSize:9 }}>Clear</button>
                       </div>
                     )}
@@ -8966,6 +8972,7 @@ function TradePulseApp({ user, onSignOut }) {
     });
   }, []);
   const [tab, setTab] = useState("dashboard");
+  const [hideBalances, setHideBalances] = useState(false);
   const [showTradeModal, setShowTradeModal] = useState(false);
   const [editingTrade, setEditingTrade] = useState(null);
   const [loaded, setLoaded] = useState(false);
@@ -9236,7 +9243,7 @@ function TradePulseApp({ user, onSignOut }) {
       </>}
 
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} dividends={dividends}/>}
+        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} dividends={dividends} hideBalances={hideBalances} setHideBalances={setHideBalances}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
         {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} prefs={prefs}/>}
         {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} onStartWheel={(ticker, account, shares, avgPrice) => {
@@ -9250,7 +9257,7 @@ function TradePulseApp({ user, onSignOut }) {
         {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} trades={trades} onSaveTrades={setTrades} prefs={prefs} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}}/>}
         {tab==="watchlist" && <Watchlist watchlists={watchlists} onSave={setWatchlists} onPromoteTrade={promoteTrade} theme={theme}/>}
         {tab==="log" && <TradeLog trades={trades} onEdit={t=>{setEditingTrade(t);setShowTradeModal(true);}} onDelete={handleTradeDelete} theme={theme} prefs={prefs}/>}
-        {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme} wheelTrades={wheelTrades} cashTransactions={cashTransactions} onSaveCashTransactions={setCashTransactions}/>}
+        {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme} wheelTrades={wheelTrades} cashTransactions={cashTransactions} onSaveCashTransactions={setCashTransactions} hideBalances={hideBalances}/>}
       </div>
       {showTradeModal && <TradeModal onSave={handleTradeSave} onClose={()=>{setShowTradeModal(false);setEditingTrade(null);}} editTrade={editingTrade} futuresSettings={futuresSettings} customFields={customFields} playbooks={playbooks} theme={theme} accountBalances={accountBalances}/>}
       {showMigration && <MigrationPrompt onMigrate={handleMigrate} onSkip={()=>setShowMigration(false)}/>}
