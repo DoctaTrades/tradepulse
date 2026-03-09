@@ -1462,7 +1462,7 @@ const DEFAULT_DASH_WIDGETS = [
 ];
 
 // ─── PRE-TRADE RISK CALCULATOR ──────────────────────────────────────────────
-function RiskCalculator({ theme, accountBalances, futuresSettings, customFields }) {
+function RiskCalculator({ theme, accountBalances, futuresSettings, customFields, accountSummaries }) {
   const [selectedAccount, setSelectedAccount] = useState("");
   const [accountSize, setAccountSize] = useState("");
   const [assetType, setAssetType] = useState("Stock"); // Stock | Options | Futures
@@ -1495,24 +1495,35 @@ function RiskCalculator({ theme, accountBalances, futuresSettings, customFields 
     return [...set];
   }, [accountBalances, customFields]);
 
-  // Auto-fill account size when account selected
+  // Auto-fill account size when account selected (use current balance from summaries)
   useEffect(() => {
-    if (selectedAccount && accountBalances && accountBalances[selectedAccount]) {
-      setAccountSize(String(parseFloat(accountBalances[selectedAccount]) || ""));
+    if (selectedAccount) {
+      const summary = (accountSummaries || []).find(a => a.name === selectedAccount);
+      if (summary) {
+        setAccountSize(String(parseFloat(summary.currentBal) || ""));
+      } else if (accountBalances && accountBalances[selectedAccount]) {
+        setAccountSize(String(parseFloat(accountBalances[selectedAccount]) || ""));
+      }
     }
-  }, [selectedAccount, accountBalances]);
+  }, [selectedAccount, accountBalances, accountSummaries]);
 
   // Auto-fill on first load
   useEffect(() => {
-    if (!accountSize && accountBalances && typeof accountBalances === "object") {
-      const entries = Object.entries(accountBalances);
-      if (entries.length > 0) {
-        const [name, val] = entries.reduce((a, b) => (parseFloat(b[1]) || 0) > (parseFloat(a[1]) || 0) ? b : a);
-        setSelectedAccount(name);
-        setAccountSize(String(parseFloat(val) || ""));
+    if (!accountSize) {
+      if (accountSummaries && accountSummaries.length > 0) {
+        const best = accountSummaries.reduce((a, b) => (b.currentBal || 0) > (a.currentBal || 0) ? b : a);
+        setSelectedAccount(best.name);
+        setAccountSize(String(parseFloat(best.currentBal) || ""));
+      } else if (accountBalances && typeof accountBalances === "object") {
+        const entries = Object.entries(accountBalances);
+        if (entries.length > 0) {
+          const [name, val] = entries.reduce((a, b) => (parseFloat(b[1]) || 0) > (parseFloat(a[1]) || 0) ? b : a);
+          setSelectedAccount(name);
+          setAccountSize(String(parseFloat(val) || ""));
+        }
       }
     }
-  }, [accountBalances]);
+  }, [accountBalances, accountSummaries]);
 
   // Auto-fill futures preset
   useEffect(() => {
@@ -2163,7 +2174,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
           <Calculator size={14}/> Risk Calculator {showRiskCalc ? "▾" : "▸"}
         </button>
       </div>
-      {showRiskCalc && <RiskCalculator theme={theme} accountBalances={accountBalances} futuresSettings={futuresSettings} customFields={customFields}/>}
+      {showRiskCalc && <RiskCalculator theme={theme} accountBalances={accountBalances} futuresSettings={futuresSettings} customFields={customFields} accountSummaries={accountSummaries}/>}
 
       {/* ═══════ ACCOUNT BALANCE CARDS ═══════ */}
       {wVis("accounts") && accountSummaries.length > 0 && (
