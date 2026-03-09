@@ -1651,7 +1651,7 @@ function RiskCalculator({ theme, accountBalances, futuresSettings, customFields,
           <div style={{ display:"flex", gap:6 }}>
             <select value={selectedAccount} onChange={e=>{setSelectedAccount(e.target.value);}} style={{ ...selectStyle, flex:1 }}>
               <option value="" style={{ background:theme.selectOptionBg }}>Manual entry...</option>
-              {allAccounts.map(a => <option key={a} value={a} style={{ background:theme.selectOptionBg }}>{a} {accountBalances?.[a] ? `($${parseFloat(accountBalances[a]).toLocaleString()})` : ""}</option>)}
+              {allAccounts.map(a => { const sum = (accountSummaries||[]).find(s=>s.name===a); const bal = sum ? sum.currentBal : (parseFloat(accountBalances?.[a])||0); return <option key={a} value={a} style={{ background:theme.selectOptionBg }}>{a} {bal ? `($${bal.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})})` : ""}</option>; })}
             </select>
             <input type="number" value={accountSize} onChange={e=>{setAccountSize(e.target.value);setSelectedAccount("");}} placeholder="$" style={{ ...inputStyle, width:90 }}/>
           </div>
