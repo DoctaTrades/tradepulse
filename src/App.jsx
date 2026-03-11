@@ -1870,7 +1870,7 @@ function RiskCalculator({ theme, accountBalances, futuresSettings, customFields,
   );
 }
 
-function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, wheelTrades, cashTransactions, dividends, hideBalances, setHideBalances }) {
+function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, onSavePrefs, wheelTrades, cashTransactions, dividends, hideBalances, setHideBalances }) {
   const widgetConfig = useMemo(() => {
     if (!dashWidgets || dashWidgets.length === 0) return DEFAULT_DASH_WIDGETS;
     const merged = [];
@@ -1890,6 +1890,8 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
   const [customDateFrom, setCustomDateFrom] = useState("");
   const [customDateTo, setCustomDateTo] = useState("");
   const [showRiskCalc, setShowRiskCalc] = useState(false);
+  const [reconcileAccount, setReconcileAccount] = useState(null); // { name, currentBal }
+  const [reconcileTarget, setReconcileTarget] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
   const [pnlMode, setPnlMode] = useState("dollar"); // dollar | percent
@@ -1997,15 +1999,19 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
 
       const totalPnL = (realizedPnL || 0) + (unrealizedPnL || 0) + (wheelPremium || 0);
 
+      // Sum reconciliation adjustments for this account
+      const reconciliations = prefs?.reconciliations?.[name] || [];
+      const reconcileAdj = reconciliations.filter(r => !resetDate || r.date >= resetDate).reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+
       // Manual override takes priority if set
       const override = balanceOverrides?.[name];
       const hasOverride = override !== undefined && override !== null && override !== "";
       const overrideVal = hasOverride ? parseFloat(override) : null;
 
-      const currentBal = hasOverride ? (overrideVal || 0) : (start || 0) + (totalPnL || 0) + (cashNet || 0) + (dividendIncome || 0);
+      const currentBal = hasOverride ? (overrideVal || 0) : (start || 0) + (totalPnL || 0) + (cashNet || 0) + (dividendIncome || 0) + reconcileAdj;
       const returnPct = start > 0 ? ((currentBal - start - (cashNet || 0)) / start) * 100 : 0;
 
-      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, wheelPremium, cashNet, dividendIncome, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal, resetDate };
+      return { name, startBal: start, currentBal, realizedPnL, unrealizedPnL, wheelPremium, cashNet, dividendIncome, totalPnL, returnPct, tradeCount: acctTrades.length, hasOverride, overrideVal, resetDate, reconcileAdj };
     });
   }, [accountBalances, trades, prefs, wheelTrades, cashTransactions, dividends]);
 
@@ -2213,7 +2219,7 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                   <div style={{ textAlign:"right" }}>
                     <div style={{ fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2 }}>P&L</div>
                     <div style={{ fontSize:13, fontWeight:600, color: acct.totalPnL >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{hideBalances ? "$•••••" : fmt(acct.totalPnL)}</div>
-                    {!hideBalances && (acct.unrealizedPnL !== 0 || acct.wheelPremium !== 0 || acct.cashNet !== 0 || acct.dividendIncome > 0) && !acct.hasOverride && !prefs.compactBalances && (
+                    {!hideBalances && (acct.unrealizedPnL !== 0 || acct.wheelPremium !== 0 || acct.cashNet !== 0 || acct.dividendIncome > 0 || acct.reconcileAdj !== 0) && !acct.hasOverride && !prefs.compactBalances && (
                       <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>
                         <span style={{ color: acct.realizedPnL >= 0 ? "rgba(74,222,128,0.6)" : "rgba(248,113,113,0.6)" }}>R: {fmt(acct.realizedPnL)}</span>
                         {acct.unrealizedPnL !== 0 && <>
@@ -2232,9 +2238,14 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
                           {" · "}
                           <span style={{ color:"rgba(52,211,153,0.7)" }}>D: {fmt(acct.dividendIncome)}</span>
                         </>}
+                        {acct.reconcileAdj !== 0 && <>
+                          {" · "}
+                          <span style={{ color:"rgba(251,146,60,0.7)" }}>Adj: {fmt(acct.reconcileAdj)}</span>
+                        </>}
                       </div>
                     )}
                     <div style={{ fontSize:9, color:theme.textFaintest, marginTop:2 }}>{hideBalances ? "started $••••• · " : `started $${acct.startBal.toLocaleString()} · `}{acct.tradeCount} trades</div>
+                    {!hideBalances && <button onClick={e=>{e.stopPropagation();setReconcileAccount(acct);setReconcileTarget("");}} style={{ background:"none", border:"none", color:"rgba(251,146,60,0.5)", cursor:"pointer", fontSize:8, padding:"2px 0", marginTop:2, textDecoration:"underline", textUnderlineOffset:2 }} onMouseEnter={e=>e.currentTarget.style.color="rgba(251,146,60,0.9)"} onMouseLeave={e=>e.currentTarget.style.color="rgba(251,146,60,0.5)"}>Reconcile</button>}
                   </div>
                 </div>
               </div>
@@ -2242,6 +2253,58 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
           </div>
         </div>
       )}
+
+      {/* ═══════ RECONCILE MODAL ═══════ */}
+      {reconcileAccount && (() => {
+        const diff = reconcileTarget !== "" ? (parseFloat(reconcileTarget) - reconcileAccount.currentBal) : null;
+        const existingAdjs = prefs?.reconciliations?.[reconcileAccount.name] || [];
+        return (
+          <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }} onClick={()=>setReconcileAccount(null)}>
+            <div onClick={e=>e.stopPropagation()} style={{ background:"var(--tp-panel)", border:"1px solid var(--tp-panel-b)", borderRadius:14, padding:"24px 28px", maxWidth:420, width:"100%" }}>
+              <div style={{ fontSize:16, fontWeight:700, color:"var(--tp-text)", marginBottom:4 }}>Reconcile: {reconcileAccount.name}</div>
+              <div style={{ fontSize:11, color:"var(--tp-faint)", marginBottom:16 }}>Enter your broker's actual balance to create an adjustment</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+                <div>
+                  <div style={{ fontSize:9, color:"var(--tp-faintest)", textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 }}>App Balance</div>
+                  <div style={{ fontSize:18, fontWeight:700, color:"var(--tp-muted)", fontFamily:"'JetBrains Mono', monospace" }}>${reconcileAccount.currentBal.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize:9, color:"var(--tp-faintest)", textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 }}>Broker Balance</div>
+                  <input type="number" value={reconcileTarget} onChange={e=>setReconcileTarget(e.target.value)} placeholder="Enter actual balance" autoFocus step="0.01" style={{ width:"100%", padding:"8px 10px", background:"var(--tp-input)", border:"1px solid var(--tp-border-l)", borderRadius:6, color:"var(--tp-text)", fontSize:14, fontFamily:"'JetBrains Mono', monospace", outline:"none", boxSizing:"border-box" }}/>
+                </div>
+              </div>
+              {diff !== null && !isNaN(diff) && (
+                <div style={{ background: diff === 0 ? "rgba(74,222,128,0.08)" : "rgba(251,146,60,0.08)", border:`1px solid ${diff === 0 ? "rgba(74,222,128,0.2)" : "rgba(251,146,60,0.2)"}`, borderRadius:8, padding:"10px 14px", marginBottom:16, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <span style={{ fontSize:11, color:"var(--tp-faint)" }}>Adjustment needed</span>
+                  <span style={{ fontSize:16, fontWeight:700, fontFamily:"'JetBrains Mono', monospace", color: diff === 0 ? "#4ade80" : diff > 0 ? "#4ade80" : "#f87171" }}>{diff >= 0 ? "+" : ""}{diff.toFixed(2)}</span>
+                </div>
+              )}
+              <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+                <button onClick={()=>setReconcileAccount(null)} style={{ padding:"8px 16px", borderRadius:6, border:"1px solid var(--tp-border-l)", background:"transparent", color:"var(--tp-faint)", cursor:"pointer", fontSize:12 }}>Cancel</button>
+                <button disabled={diff === null || isNaN(diff) || diff === 0} onClick={()=>{
+                  const adj = { id: Date.now(), date: new Date().toISOString().split("T")[0], amount: parseFloat(diff.toFixed(2)), brokerBal: parseFloat(reconcileTarget), appBal: reconcileAccount.currentBal };
+                  onSavePrefs(p => ({ ...p, reconciliations: { ...(p.reconciliations||{}), [reconcileAccount.name]: [...((p.reconciliations||{})[reconcileAccount.name]||[]), adj] } }));
+                  setReconcileAccount(null);
+                }} style={{ padding:"8px 18px", borderRadius:6, border:"none", background: (diff && diff !== 0) ? "linear-gradient(135deg,#f97316,#fb923c)" : "rgba(100,100,100,0.3)", color:"#fff", cursor: (diff && diff !== 0) ? "pointer" : "default", fontSize:12, fontWeight:600, opacity: (diff === null || isNaN(diff) || diff === 0) ? 0.4 : 1 }}>Apply Adjustment</button>
+              </div>
+              {existingAdjs.length > 0 && (
+                <div style={{ marginTop:16, borderTop:"1px solid var(--tp-border-l)", paddingTop:12 }}>
+                  <div style={{ fontSize:9, color:"var(--tp-faintest)", textTransform:"uppercase", letterSpacing:0.5, marginBottom:6 }}>Adjustment History</div>
+                  {existingAdjs.map(adj => (
+                    <div key={adj.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", fontSize:10, color:"var(--tp-faint)" }}>
+                      <span>{adj.date}</span>
+                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                        <span style={{ fontFamily:"'JetBrains Mono', monospace", color: adj.amount >= 0 ? "#4ade80" : "#f87171" }}>{adj.amount >= 0 ? "+" : ""}{adj.amount.toFixed(2)}</span>
+                        <button onClick={()=>onSavePrefs(p=>({...p,reconciliations:{...(p.reconciliations||{}),[reconcileAccount.name]:((p.reconciliations||{})[reconcileAccount.name]||[]).filter(r=>r.id!==adj.id)}}))} style={{ background:"none", border:"none", color:"var(--tp-faintest)", cursor:"pointer", padding:0 }} onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="var(--tp-faintest)"}><X size={10}/></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ═══════ FILTER BAR ═══════ */}
       {wVis("filters") && <div style={{ ...panel(), marginBottom:18, padding:"14px 18px", order:wOrder("filters") }}>
@@ -9254,7 +9317,7 @@ function TradePulseApp({ user, onSignOut }) {
       </>}
 
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} dividends={dividends} hideBalances={hideBalances} setHideBalances={setHideBalances}/>}
+        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} onSavePrefs={setPrefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} dividends={dividends} hideBalances={hideBalances} setHideBalances={setHideBalances}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
         {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} prefs={prefs}/>}
         {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} onStartWheel={(ticker, account, shares, avgPrice) => {
