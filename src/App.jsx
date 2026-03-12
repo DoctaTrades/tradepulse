@@ -3753,8 +3753,11 @@ function GoalTracker({ goals, onSave, trades, theme, accounts, prefs }) {
     let bal = startingBalance;
     sortedDays.forEach(date => {
       const entry = dailyLog[date];
-      bal += (entry.pnl || 0);
-      bals.push({ date, pnl: entry.pnl || 0, hit: entry.hit, balance: bal, note: entry.note || "" });
+      const pnl = entry.pnl || 0;
+      const prevBal = bal;
+      bal += pnl;
+      const pctPnL = prevBal > 0 ? (pnl / prevBal) * 100 : 0;
+      bals.push({ date, pnl, hit: entry.hit, balance: bal, note: entry.note || "", pctPnL });
     });
     return bals;
   }, [sortedDays, dailyLog, startingBalance]);
@@ -3940,7 +3943,7 @@ function GoalTracker({ goals, onSave, trades, theme, accounts, prefs }) {
             {todayEntry ? (
               <div style={{ padding:"10px 14px", borderRadius:10, background: todayEntry.hit ? "rgba(74,222,128,0.06)" : "rgba(248,113,113,0.06)", border: todayEntry.hit ? "1px solid rgba(74,222,128,0.15)" : "1px solid rgba(248,113,113,0.15)" }}>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                  <span style={{ fontSize:13, fontWeight:600, color: todayEntry.hit ? "#4ade80" : "#f87171" }}>{todayEntry.hit ? "✓ Goal Hit" : "✗ Goal Missed"} — {fmt(todayEntry.pnl)}</span>
+                  <span style={{ fontSize:13, fontWeight:600, color: todayEntry.hit ? "#4ade80" : "#f87171" }}>{todayEntry.hit ? "✓ Goal Hit" : "✗ Goal Missed"} — {fmt(todayEntry.pnl)}{(() => { const prevBal = currentBalance - (todayEntry.pnl||0); return prevBal > 0 ? ` (${((todayEntry.pnl||0) / prevBal * 100).toFixed(1)}%)` : ""; })()}</span>
                   <button onClick={()=>removeDay(todayStr)} style={{ background:"none", border:"none", color:"var(--tp-faintest)", cursor:"pointer", fontSize:11 }}>Reset</button>
                 </div>
               </div>
@@ -4067,14 +4070,15 @@ function GoalTracker({ goals, onSave, trades, theme, accounts, prefs }) {
 
           {/* Day rows */}
           <div style={{ display:"grid", gap:4 }}>
-            <div style={{ display:"grid", gridTemplateColumns:"90px 1fr 80px 80px 80px 28px", gap:8, padding:"6px 10px", fontSize:9, color:"var(--tp-faintest)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.5 }}>
-              <span>Date</span><span>Note</span><span style={{ textAlign:"right" }}>P&L</span><span style={{ textAlign:"right" }}>Balance</span><span style={{ textAlign:"center" }}>Goal</span><span/>
+            <div style={{ display:"grid", gridTemplateColumns:"90px 1fr 80px 50px 80px 80px 28px", gap:8, padding:"6px 10px", fontSize:9, color:"var(--tp-faintest)", fontWeight:600, textTransform:"uppercase", letterSpacing:0.5 }}>
+              <span>Date</span><span>Note</span><span style={{ textAlign:"right" }}>P&L</span><span style={{ textAlign:"right" }}>%</span><span style={{ textAlign:"right" }}>Balance</span><span style={{ textAlign:"center" }}>Goal</span><span/>
             </div>
             {[...runningBalances].reverse().map(row => (
-              <div key={row.date} style={{ display:"grid", gridTemplateColumns:"90px 1fr 80px 80px 80px 28px", gap:8, padding:"8px 10px", background:"var(--tp-card)", borderRadius:6, alignItems:"center", borderLeft: row.hit ? "3px solid #4ade80" : row.hit === false ? "3px solid #f87171" : "3px solid var(--tp-border)" }}>
+              <div key={row.date} style={{ display:"grid", gridTemplateColumns:"90px 1fr 80px 50px 80px 80px 28px", gap:8, padding:"8px 10px", background:"var(--tp-card)", borderRadius:6, alignItems:"center", borderLeft: row.hit ? "3px solid #4ade80" : row.hit === false ? "3px solid #f87171" : "3px solid var(--tp-border)" }}>
                 <span style={{ fontSize:11, color:"var(--tp-muted)", fontFamily:"'JetBrains Mono', monospace" }}>{row.date.slice(5)}</span>
                 <input value={row.note} onChange={e=>updateNote(row.date, e.target.value)} placeholder="Quick note..." style={{ padding:"3px 6px", background:"transparent", border:"1px solid transparent", borderRadius:4, color:"var(--tp-text2)", fontSize:11, outline:"none", boxSizing:"border-box" }} onFocus={e=>e.target.style.borderColor="var(--tp-border-l)"} onBlur={e=>e.target.style.borderColor="transparent"}/>
                 <span style={{ textAlign:"right", fontSize:12, fontWeight:600, color: row.pnl >= 0 ? "#4ade80" : "#f87171", fontFamily:"'JetBrains Mono', monospace" }}>{row.pnl >= 0 ? "+" : ""}{row.pnl.toFixed(2)}</span>
+                <span style={{ textAlign:"right", fontSize:10, color: row.pctPnL >= 0 ? "rgba(74,222,128,0.6)" : "rgba(248,113,113,0.6)", fontFamily:"'JetBrains Mono', monospace" }}>{row.pctPnL >= 0 ? "+" : ""}{row.pctPnL.toFixed(1)}%</span>
                 <span style={{ textAlign:"right", fontSize:12, fontWeight:600, color:"var(--tp-text)", fontFamily:"'JetBrains Mono', monospace" }}>${row.balance.toFixed(2)}</span>
                 <span style={{ textAlign:"center", fontSize:14 }}>{row.hit === true ? "✅" : row.hit === false ? "❌" : "—"}</span>
                 <button onClick={()=>removeDay(row.date)} style={{ background:"none", border:"none", color:"var(--tp-faintest)", cursor:"pointer", padding:0 }}><Trash2 size={12}/></button>
