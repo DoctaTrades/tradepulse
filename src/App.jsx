@@ -7404,6 +7404,341 @@ function SetupGuide() {
   );
 }
 
+// ─── REPORTS TAB ─────────────────────────────────────────────────────────────
+function ReportsTab({ trades, wheelTrades, accountBalances, customFields, theme, prefs }) {
+  const [reportType, setReportType] = useState("summary");
+  const [account, setAccount] = useState("All");
+  const [dateRange, setDateRange] = useState("month");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [assetFilter, setAssetFilter] = useState("All");
+  const [strategyFilter, setStrategyFilter] = useState("All");
+  const [generated, setGenerated] = useState(false);
+
+  const accounts = useMemo(() => {
+    const s = new Set();
+    if (accountBalances) Object.keys(accountBalances).forEach(k => s.add(k));
+    if (customFields?.accounts) customFields.accounts.forEach(k => s.add(k));
+    return [...s];
+  }, [accountBalances, customFields]);
+
+  // Date range calculation
+  const { fromDate, toDate } = useMemo(() => {
+    const today = new Date();
+    let from = new Date();
+    if (dateRange === "week") from.setDate(today.getDate() - 7);
+    else if (dateRange === "month") from.setDate(today.getDate() - 30);
+    else if (dateRange === "quarter") from.setDate(today.getDate() - 90);
+    else if (dateRange === "ytd") { from = new Date(today.getFullYear(), 0, 1); }
+    else if (dateRange === "all") { from = new Date(2000, 0, 1); }
+    else if (dateRange === "custom" && customFrom) { from = new Date(customFrom + "T00:00:00"); }
+    const to = dateRange === "custom" && customTo ? new Date(customTo + "T23:59:59") : today;
+    return { fromDate: from.toISOString().split("T")[0], toDate: to.toISOString().split("T")[0] };
+  }, [dateRange, customFrom, customTo]);
+
+  // Filter trades
+  const filtered = useMemo(() => {
+    return trades.filter(t => {
+      if (t.pnl === null || t.pnl === undefined) return false;
+      if (t.status !== "Closed") return false;
+      if (account !== "All" && t.account !== account) return false;
+      if (t.date < fromDate || t.date > toDate) return false;
+      if (assetFilter !== "All" && t.assetType !== assetFilter) return false;
+      if (strategyFilter !== "All") {
+        const strat = t.optionsStrategyType || t.tradeStrategy || t.strategy || "";
+        if (strategyFilter === "Premium") {
+          const premStrats = ["Wheel Strategy","PMCC / Diagonal","Diagonal","Calendar Press","Calendar","Vertical Spread","Iron Condor","Credit Spread"];
+          if (!premStrats.some(ps => strat.includes(ps)) && !["CSP","CC"].includes(t.type)) return false;
+        } else if (!strat.toLowerCase().includes(strategyFilter.toLowerCase())) return false;
+      }
+      return true;
+    }).sort((a, b) => new Date(b.date) - new Date(a.date));
+  }, [trades, account, fromDate, toDate, assetFilter, strategyFilter]);
+
+  // Stats
+  const stats = useMemo(() => {
+    const wins = filtered.filter(t => t.pnl > 0);
+    const losses = filtered.filter(t => t.pnl < 0);
+    const totalPnL = filtered.reduce((s, t) => s + (t.pnl || 0), 0);
+    const winRate = filtered.length > 0 ? (wins.length / filtered.length) * 100 : 0;
+    const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+    const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+    const grossWins = wins.reduce((s, t) => s + t.pnl, 0);
+    const grossLosses = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+    const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
+    const best = filtered.length > 0 ? filtered.reduce((a, b) => b.pnl > a.pnl ? b : a) : null;
+    const worst = filtered.length > 0 ? filtered.reduce((a, b) => b.pnl < a.pnl ? b : a) : null;
+
+    // By strategy
+    const byStrategy = {};
+    filtered.forEach(t => {
+      const s = t.optionsStrategyType || t.tradeStrategy || t.strategy || "Other";
+      if (!byStrategy[s]) byStrategy[s] = { name: s, trades: 0, pnl: 0, wins: 0 };
+      byStrategy[s].trades++;
+      byStrategy[s].pnl += t.pnl || 0;
+      if (t.pnl > 0) byStrategy[s].wins++;
+    });
+
+    // By asset
+    const byAsset = {};
+    filtered.forEach(t => {
+      const a = t.assetType || "Other";
+      if (!byAsset[a]) byAsset[a] = { name: a, trades: 0, pnl: 0, wins: 0 };
+      byAsset[a].trades++;
+      byAsset[a].pnl += t.pnl || 0;
+      if (t.pnl > 0) byAsset[a].wins++;
+    });
+
+    const startBal = account !== "All" && accountBalances?.[account] ? parseFloat(accountBalances[account]) : Object.values(accountBalances || {}).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+    const returnPct = startBal > 0 ? (totalPnL / startBal) * 100 : 0;
+
+    return { totalPnL, winRate, avgWin, avgLoss, profitFactor, wins: wins.length, losses: losses.length, total: filtered.length, best, worst, byStrategy: Object.values(byStrategy).sort((a, b) => b.pnl - a.pnl), byAsset: Object.values(byAsset), returnPct };
+  }, [filtered, accountBalances, account]);
+
+  // Unique strategies for filter
+  const allStrategies = useMemo(() => {
+    const s = new Set();
+    trades.forEach(t => {
+      if (t.optionsStrategyType) s.add(t.optionsStrategyType);
+      if (t.tradeStrategy) s.add(t.tradeStrategy);
+    });
+    return [...s].sort();
+  }, [trades]);
+
+  const fmtD = n => n === null || n === undefined || isNaN(n) ? "—" : `${n >= 0 ? "+" : ""}$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtPct = n => `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+
+  const reportTypes = [
+    { id: "summary", icon: "📋", label: "Trade Summary", desc: "P&L breakdown with trade-by-trade detail" },
+    { id: "strategy", icon: "🎯", label: "Strategy Performance", desc: "Side-by-side strategy comparison" },
+    { id: "recap", icon: "📅", label: "Period Recap", desc: "Summary with best/worst trades and stats" },
+  ];
+
+  const panel = () => ({ background: "var(--tp-panel)", border: "1px solid var(--tp-panel-b)", borderRadius: 14, padding: "18px 20px" });
+
+  const handlePrint = () => {
+    const el = document.getElementById("tp-report-preview");
+    if (!el) return;
+    const win = window.open("", "_blank");
+    win.document.write(`<html><head><title>TradePulse Report</title><style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+      *{margin:0;padding:0;box-sizing:border-box;}body{font-family:'Inter',sans-serif;color:#1a1a2e;padding:32px 40px;}
+      .rpt-header{display:flex;justify-content:space-between;align-items:start;margin-bottom:28px;padding-bottom:16px;border-bottom:2px solid #e8e8f0;}
+      .rpt-title{font-size:22px;font-weight:800;}.rpt-subtitle{font-size:11px;color:#6b7280;margin-top:3px;}
+      .rpt-meta{text-align:right;font-size:10px;color:#6b7280;line-height:1.8;}
+      .rpt-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:28px;}
+      .rpt-stat{background:#f8f9fc;border-radius:8px;padding:14px 16px;border:1px solid #e8e8f0;}
+      .rpt-stat .label{font-size:8px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.8px;font-weight:600;margin-bottom:5px;}
+      .rpt-stat .value{font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+      .rpt-stat .sub{font-size:9px;color:#9ca3af;margin-top:2px;}
+      .green{color:#059669;}.red{color:#dc2626;}.blue{color:#2563eb;}.purple{color:#7c3aed;}
+      .rpt-section-title{font-size:13px;font-weight:700;margin-bottom:10px;padding-bottom:5px;border-bottom:1px solid #e8e8f0;}
+      .rpt-strat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:24px;}
+      .rpt-strat-card{background:#f8f9fc;border:1px solid #e8e8f0;border-radius:6px;padding:10px 12px;}
+      .rpt-strat-card .name{font-size:10px;font-weight:600;color:#6b7280;margin-bottom:4px;}
+      .rpt-strat-card .big{font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+      .rpt-strat-card .detail{font-size:8px;color:#9ca3af;margin-top:3px;}
+      table{width:100%;border-collapse:collapse;font-size:10px;margin-bottom:20px;}
+      th{text-align:left;padding:6px 8px;background:#f8f9fc;border-bottom:2px solid #e8e8f0;font-size:8px;font-weight:600;color:#9ca3af;text-transform:uppercase;}
+      td{padding:6px 8px;border-bottom:1px solid #f0f0f5;font-size:10px;color:#374151;}
+      .mono{font-family:'JetBrains Mono',monospace;font-weight:600;}
+      .badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:8px;font-weight:600;}
+      .badge-long{background:#d1fae5;color:#059669;}.badge-short{background:#fee2e2;color:#dc2626;}.badge-strat{background:#e0e7ff;color:#4338ca;}
+      .rpt-footer{text-align:center;font-size:9px;color:#9ca3af;padding-top:12px;border-top:1px solid #e8e8f0;}
+      @media print{body{padding:16px 20px;}}
+    </style></head><body>${el.innerHTML}</body></html>`);
+    win.document.close();
+    setTimeout(() => { win.print(); }, 500);
+  };
+
+  return (
+    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+      {/* Report Type Cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 20 }}>
+        {reportTypes.map(rt => (
+          <div key={rt.id} onClick={() => { setReportType(rt.id); setGenerated(false); }} style={{
+            ...panel(), cursor: "pointer", transition: "all 0.2s",
+            border: reportType === rt.id ? "1px solid rgba(99,102,241,0.5)" : "1px solid var(--tp-panel-b)",
+            background: reportType === rt.id ? "rgba(99,102,241,0.06)" : "var(--tp-panel)"
+          }}>
+            <div style={{ fontSize: 20, marginBottom: 8 }}>{rt.icon}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--tp-text)", marginBottom: 3 }}>{rt.label}</div>
+            <div style={{ fontSize: 11, color: "var(--tp-faint)", lineHeight: 1.5 }}>{rt.desc}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div style={{ ...panel(), marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 9, color: "var(--tp-faintest)", textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 600 }}>Account</span>
+            <select value={account} onChange={e => setAccount(e.target.value)} style={{ padding: "8px 12px", background: "var(--tp-input)", border: "1px solid var(--tp-border-l)", borderRadius: 6, color: "var(--tp-text)", fontSize: 12, outline: "none" }}>
+              <option value="All">All Accounts</option>
+              {accounts.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 9, color: "var(--tp-faintest)", textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 600 }}>Date Range</span>
+            <select value={dateRange} onChange={e => setDateRange(e.target.value)} style={{ padding: "8px 12px", background: "var(--tp-input)", border: "1px solid var(--tp-border-l)", borderRadius: 6, color: "var(--tp-text)", fontSize: 12, outline: "none" }}>
+              <option value="week">Last 7 Days</option>
+              <option value="month">Last 30 Days</option>
+              <option value="quarter">Last 90 Days</option>
+              <option value="ytd">Year to Date</option>
+              <option value="all">All Time</option>
+              <option value="custom">Custom Range</option>
+            </select>
+          </div>
+          {dateRange === "custom" && <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 9, color: "var(--tp-faintest)", textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 600 }}>From</span>
+              <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} style={{ padding: "8px 10px", background: "var(--tp-input)", border: "1px solid var(--tp-border-l)", borderRadius: 6, color: "var(--tp-text)", fontSize: 12, outline: "none" }}/>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 9, color: "var(--tp-faintest)", textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 600 }}>To</span>
+              <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} style={{ padding: "8px 10px", background: "var(--tp-input)", border: "1px solid var(--tp-border-l)", borderRadius: 6, color: "var(--tp-text)", fontSize: 12, outline: "none" }}/>
+            </div>
+          </>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 9, color: "var(--tp-faintest)", textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 600 }}>Asset Type</span>
+            <select value={assetFilter} onChange={e => setAssetFilter(e.target.value)} style={{ padding: "8px 12px", background: "var(--tp-input)", border: "1px solid var(--tp-border-l)", borderRadius: 6, color: "var(--tp-text)", fontSize: 12, outline: "none" }}>
+              <option value="All">All Types</option>
+              <option value="Stock">Stocks</option>
+              <option value="Options">Options</option>
+              <option value="Futures">Futures</option>
+            </select>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 9, color: "var(--tp-faintest)", textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 600 }}>Strategy</span>
+            <select value={strategyFilter} onChange={e => setStrategyFilter(e.target.value)} style={{ padding: "8px 12px", background: "var(--tp-input)", border: "1px solid var(--tp-border-l)", borderRadius: 6, color: "var(--tp-text)", fontSize: 12, outline: "none" }}>
+              <option value="All">All Strategies</option>
+              <option value="Premium">All Premium (Wheel/PMCC/Cal/Spreads)</option>
+              {allStrategies.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <button onClick={() => setGenerated(true)} style={{ padding: "8px 20px", borderRadius: 8, border: "none", background: "linear-gradient(135deg,#6366f1,#8b5cf6)", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 600, boxShadow: "0 4px 14px rgba(99,102,241,0.3)", whiteSpace: "nowrap" }}>Generate</button>
+          {generated && <button onClick={handlePrint} style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(74,222,128,0.3)", background: "rgba(74,222,128,0.08)", color: "#4ade80", cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}>📄 Print / PDF</button>}
+        </div>
+      </div>
+
+      {/* Report Preview */}
+      {!generated ? (
+        <div style={{ ...panel(), textAlign: "center", padding: "80px 20px" }}>
+          <FileText size={48} color="var(--tp-faint)" style={{ marginBottom: 16, opacity: 0.3 }}/>
+          <div style={{ fontSize: 15, color: "var(--tp-faint)", marginBottom: 6 }}>Select your filters and click Generate</div>
+          <div style={{ fontSize: 12, color: "var(--tp-faintest)" }}>{filtered.length} trades match current filters</div>
+        </div>
+      ) : (
+        <div id="tp-report-preview" style={{ background: "#fff", borderRadius: 12, overflow: "hidden", color: "#1a1a2e", padding: "40px 48px" }}>
+          {/* Report Header */}
+          <div className="rpt-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 28, paddingBottom: 16, borderBottom: "2px solid #e8e8f0" }}>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "#1a1a2e" }}>{reportType === "summary" ? "Trade Summary Report" : reportType === "strategy" ? "Strategy Performance Report" : "Period Recap"}</div>
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>{account === "All" ? "All Accounts" : account} — {dateRange === "custom" ? `${customFrom} to ${customTo}` : dateRange === "week" ? "Last 7 Days" : dateRange === "month" ? "Last 30 Days" : dateRange === "quarter" ? "Last 90 Days" : dateRange === "ytd" ? "Year to Date" : "All Time"}</div>
+            </div>
+            <div style={{ textAlign: "right", fontSize: 10, color: "#6b7280", lineHeight: 1.8 }}>
+              <div><strong>Generated:</strong> {new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</div>
+              <div><strong>Period:</strong> {fromDate} to {toDate}</div>
+              <div><strong>Trades:</strong> {filtered.length} closed</div>
+            </div>
+          </div>
+
+          {/* Summary Stats */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 28 }}>
+            {[
+              { label: "Net P&L", value: fmtD(stats.totalPnL), sub: `${fmtPct(stats.returnPct)} return`, color: stats.totalPnL >= 0 ? "#059669" : "#dc2626" },
+              { label: "Win Rate", value: `${stats.winRate.toFixed(1)}%`, sub: `${stats.wins}W / ${stats.losses}L`, color: "#2563eb" },
+              { label: "Avg Win", value: fmtD(stats.avgWin), sub: "per winning trade", color: "#059669" },
+              { label: "Avg Loss", value: fmtD(stats.avgLoss), sub: "per losing trade", color: "#dc2626" },
+              { label: "Profit Factor", value: stats.profitFactor === Infinity ? "∞" : stats.profitFactor.toFixed(2), sub: "win $ / loss $", color: "#7c3aed" },
+            ].map((s, i) => (
+              <div key={i} style={{ background: "#f8f9fc", borderRadius: 8, padding: "14px 16px", border: "1px solid #e8e8f0" }}>
+                <div style={{ fontSize: 8, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 600, marginBottom: 5 }}>{s.label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: s.color }}>{s.value}</div>
+                <div style={{ fontSize: 9, color: "#9ca3af", marginTop: 2 }}>{s.sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Strategy Breakdown */}
+          {stats.byStrategy.length > 0 && <>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#1a1a2e", marginBottom: 10, paddingBottom: 5, borderBottom: "1px solid #e8e8f0" }}>Performance by Strategy</div>
+            <div className="rpt-strat-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 24 }}>
+              {stats.byStrategy.map(s => (
+                <div key={s.name} style={{ background: "#f8f9fc", border: "1px solid #e8e8f0", borderRadius: 6, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: "#6b7280", marginBottom: 4 }}>{s.name}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: s.pnl >= 0 ? "#059669" : "#dc2626" }}>{fmtD(s.pnl)}</div>
+                  <div style={{ fontSize: 8, color: "#9ca3af", marginTop: 3 }}>{s.trades} trades · {s.trades > 0 ? ((s.wins / s.trades) * 100).toFixed(0) : 0}% win</div>
+                </div>
+              ))}
+            </div>
+          </>}
+
+          {/* Trade Table */}
+          {(reportType === "summary" || reportType === "recap") && <>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#1a1a2e", marginBottom: 10, paddingBottom: 5, borderBottom: "1px solid #e8e8f0" }}>Trade Detail</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, marginBottom: 20 }}>
+              <thead>
+                <tr>
+                  {["Date","Ticker","Type","Direction","Strategy","Entry","Exit","P&L","Notes"].map(h => (
+                    <th key={h} style={{ textAlign: h === "P&L" ? "right" : "left", padding: "6px 8px", background: "#f8f9fc", borderBottom: "2px solid #e8e8f0", fontSize: 8, fontWeight: 600, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 0.5 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.slice(0, 100).map(t => {
+                  const strat = t.optionsStrategyType || t.tradeStrategy || t.strategy || "";
+                  const entry = t.assetType === "Options" ? (t.legs?.[0]?.entryPremium ? `$${t.legs[0].entryPremium}` : "") : (t.entryPrice || "");
+                  const exit = t.assetType === "Options" ? (t.legs?.[0]?.exitPremium ? `$${t.legs[0].exitPremium}` : "") : (t.exitPrice || "");
+                  return (
+                    <tr key={t.id}>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, fontSize: 10, color: "#374151" }}>{t.date?.slice(5)}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontWeight: 700, color: "#1a1a2e" }}>{t.ticker}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", color: "#374151" }}>{t.assetType}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5" }}>
+                        <span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 8, fontSize: 8, fontWeight: 600, background: t.direction === "Long" ? "#d1fae5" : "#fee2e2", color: t.direction === "Long" ? "#059669" : "#dc2626" }}>{t.direction}</span>
+                      </td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5" }}>
+                        {strat && <span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 8, fontSize: 8, fontWeight: 600, background: "#e0e7ff", color: "#4338ca" }}>{strat.length > 16 ? strat.slice(0, 16) + "…" : strat}</span>}
+                      </td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "#374151" }}>{entry}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "#374151" }}>{exit}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, textAlign: "right", color: t.pnl >= 0 ? "#059669" : "#dc2626" }}>{fmtD(t.pnl)}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontSize: 9, color: "#9ca3af", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.notes || ""}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {filtered.length > 100 && <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 16 }}>Showing first 100 of {filtered.length} trades</div>}
+          </>}
+
+          {/* Best / Worst for recap */}
+          {reportType === "recap" && stats.best && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 24 }}>
+              <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "12px 16px" }}>
+                <div style={{ fontSize: 9, color: "#059669", textTransform: "uppercase", fontWeight: 600, marginBottom: 4 }}>Best Trade</div>
+                <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'JetBrains Mono',monospace", color: "#059669" }}>{fmtD(stats.best.pnl)}</div>
+                <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>{stats.best.ticker} · {stats.best.date}</div>
+              </div>
+              <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "12px 16px" }}>
+                <div style={{ fontSize: 9, color: "#dc2626", textTransform: "uppercase", fontWeight: 600, marginBottom: 4 }}>Worst Trade</div>
+                <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'JetBrains Mono',monospace", color: "#dc2626" }}>{fmtD(stats.worst.pnl)}</div>
+                <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>{stats.worst.ticker} · {stats.worst.date}</div>
+              </div>
+            </div>
+          )}
+
+          {/* Footer */}
+          <div style={{ textAlign: "center", fontSize: 9, color: "#9ca3af", paddingTop: 12, borderTop: "1px solid #e8e8f0" }}>
+            Generated by TradePulse · Confidential
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsTab({ futuresSettings, onSaveFutures, customFields, onSaveCustomFields, accountBalances, onSaveAccountBalances, trades, onSaveTrades, prefs, onSavePrefs, theme, wheelTrades, cashTransactions, onSaveCashTransactions, hideBalances }) {
   const [section, setSection] = useState("accounts"); // accounts | appearance | futures | custom | importexport | ai
   const [showAddModal, setShowAddModal] = useState(false);
@@ -7730,9 +8065,9 @@ function AppearanceManager({ prefs, onSave, theme }) {
 }
 
 function TabOrderManager({ prefs, onSave, theme }) {
-  const DEFAULT_TAB_IDS = ["dashboard","journal","goals","holdings","review","playbook","wheel","watchlist","log","settings"];
-  const TAB_LABELS = { dashboard:"Dashboard", journal:"Journal", goals:"Goals", holdings:"Holdings", review:"Review", playbook:"Playbook", wheel:"Wheel", watchlist:"Watchlist", log:"Trade Log", settings:"Settings" };
-  const TAB_ICONS = { dashboard:Home, journal:Clipboard, goals:Target, holdings:Briefcase, review:Shield, playbook:BookOpen, wheel:RefreshCw, watchlist:Crosshair, log:List, settings:Settings };
+  const DEFAULT_TAB_IDS = ["dashboard","journal","goals","holdings","review","playbook","wheel","watchlist","log","reports","settings"];
+  const TAB_LABELS = { dashboard:"Dashboard", journal:"Journal", goals:"Goals", holdings:"Holdings", review:"Review", playbook:"Playbook", wheel:"Wheel", watchlist:"Watchlist", log:"Trade Log", reports:"Reports", settings:"Settings" };
+  const TAB_ICONS = { dashboard:Home, journal:Clipboard, goals:Target, holdings:Briefcase, review:Shield, playbook:BookOpen, wheel:RefreshCw, watchlist:Crosshair, log:List, reports:FileText, settings:Settings };
 
   const currentOrder = (prefs.tabOrder && prefs.tabOrder.length > 0) ? prefs.tabOrder : DEFAULT_TAB_IDS;
   // Ensure all tabs present
@@ -9247,7 +9582,7 @@ function TradePulseApp({ user, onSignOut }) {
   const handleTradeDelete = useCallback(id => setTrades(prev=>prev.filter(t=>t.id!==id)), []);
   const promoteTrade = prefill => { setEditingTrade(emptyTrade(prefill)); setShowTradeModal(true); };
 
-  const ALL_TABS = [{ id:"dashboard", label:"Dashboard", icon:Home },{ id:"journal", label:"Journal", icon:Clipboard },{ id:"goals", label:"Goals", icon:Target },{ id:"holdings", label:"Holdings", icon:Briefcase },{ id:"review", label:"Review", icon:Shield },{ id:"playbook", label:"Playbook", icon:BookOpen },{ id:"wheel", label:"Premium", icon:DollarSign },{ id:"watchlist", label:"Watchlist", icon:Crosshair },{ id:"log", label:"Trade Log", icon:List },{ id:"settings", label:"Settings", icon:Settings }];
+  const ALL_TABS = [{ id:"dashboard", label:"Dashboard", icon:Home },{ id:"journal", label:"Journal", icon:Clipboard },{ id:"goals", label:"Goals", icon:Target },{ id:"holdings", label:"Holdings", icon:Briefcase },{ id:"review", label:"Review", icon:Shield },{ id:"playbook", label:"Playbook", icon:BookOpen },{ id:"wheel", label:"Premium", icon:DollarSign },{ id:"watchlist", label:"Watchlist", icon:Crosshair },{ id:"log", label:"Trade Log", icon:List },{ id:"reports", label:"Reports", icon:FileText },{ id:"settings", label:"Settings", icon:Settings }];
   const tabs = useMemo(() => {
     if (!prefs.tabOrder || prefs.tabOrder.length === 0) return ALL_TABS;
     const ordered = [];
@@ -9256,7 +9591,7 @@ function TradePulseApp({ user, onSignOut }) {
     return ordered;
   }, [prefs.tabOrder]);
 
-  const headerBtn = tab==="watchlist" || tab==="wheel" || tab==="settings" || tab==="playbook" || tab==="review" || tab==="holdings" || tab==="journal" || tab==="goals" ? null : (
+  const headerBtn = tab==="watchlist" || tab==="wheel" || tab==="settings" || tab==="playbook" || tab==="review" || tab==="holdings" || tab==="journal" || tab==="goals" || tab==="reports" ? null : (
     <button onClick={()=>{setEditingTrade(null);setShowTradeModal(true);}} style={{ display:"flex", alignItems:"center", gap:7, padding:"8px 18px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:600, boxShadow:"0 4px 14px rgba(99,102,241,0.3)", transition:"transform 0.15s, box-shadow 0.15s" }}
       onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow="0 6px 20px rgba(99,102,241,0.4)";}} onMouseLeave={e=>{e.currentTarget.style.transform="translateY(0)";e.currentTarget.style.boxShadow="0 4px 14px rgba(99,102,241,0.3)";}}
     ><Plus size={15}/> New Trade</button>
@@ -9335,6 +9670,7 @@ function TradePulseApp({ user, onSignOut }) {
         {tab==="wheel" && <WheelTab wheelTrades={wheelTrades} onSave={setWheelTrades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} trades={trades} onSaveTrades={setTrades} prefs={prefs} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}}/>}
         {tab==="watchlist" && <Watchlist watchlists={watchlists} onSave={setWatchlists} onPromoteTrade={promoteTrade} theme={theme}/>}
         {tab==="log" && <TradeLog trades={trades} onEdit={t=>{setEditingTrade(t);setShowTradeModal(true);}} onDelete={handleTradeDelete} theme={theme} prefs={prefs}/>}
+        {tab==="reports" && <ReportsTab trades={trades} wheelTrades={wheelTrades} accountBalances={accountBalances} customFields={customFields} theme={theme} prefs={prefs}/>}
         {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme} wheelTrades={wheelTrades} cashTransactions={cashTransactions} onSaveCashTransactions={setCashTransactions} hideBalances={hideBalances}/>}
       </div>
       {showTradeModal && <TradeModal onSave={handleTradeSave} onClose={()=>{setShowTradeModal(false);setEditingTrade(null);}} editTrade={editingTrade} futuresSettings={futuresSettings} customFields={customFields} playbooks={playbooks} theme={theme} accountBalances={accountBalances}/>}
