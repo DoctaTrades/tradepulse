@@ -8531,6 +8531,151 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
     reader.readAsText(file);
   };
 
+  // ── IMPORT: Parse Webull PDF Statement ──
+  const handlePDFUpload = async (file) => {
+    if (!file) return;
+    setFileName(file.name);
+    try {
+      // Load pdf.js from CDN if not already loaded
+      if (!window.pdfjsLib) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+          script.onload = () => {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+            resolve();
+          };
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      }
+
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const pageText = content.items.map(item => item.str).join(" ");
+        fullText += pageText + "\n";
+      }
+
+      // Parse Webull securities trading activity
+      const orders = parseWebullPDF(fullText);
+      if (orders.length === 0) {
+        alert("No trades found in this PDF. Make sure it's a Webull statement with Securities Trading Activity.");
+        return;
+      }
+
+      // Group buys/sells by ticker+date into complete trades
+      const grouped = groupWebullTrades(orders);
+      setImportPreview(grouped);
+      setCsvData(null);
+      setCsvFormat("pdf");
+      setStep(3);
+    } catch (err) {
+      console.error("PDF parse error:", err);
+      alert("Error reading PDF: " + err.message);
+    }
+  };
+
+  const parseWebullPDF = (text) => {
+    const orders = [];
+    // Match patterns like: SYMBOL - CUSIP\nCOMPANY NAME DATE DATE B/S QTY PRICE GROSS COMM FEE NET
+    // The PDF text is concatenated so we need to find trade lines
+    const lines = text.split("\n").join(" ");
+    
+    // Find all trade entries - look for B or S followed by numbers
+    const symbolPattern = /([A-Z]{1,5})\s+-\s+[A-Z0-9]+\s+[\w\s&,.'()-]+?\s+(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})\s+(B|S)\s+(-?[\d,.]+)\s+([\d,.]+)\s+(-?[\d,.]+)\s+([\d,.]+)\s+(-?[\d,.]+)\s+(-?[\d,.]+)/g;
+    
+    let match;
+    while ((match = symbolPattern.exec(lines)) !== null) {
+      const [, symbol, tradeDate, , action, qty, price, gross, commission, feeTax, netAmount] = match;
+      const absQty = Math.abs(parseFloat(qty.replace(/,/g, "")));
+      const parsedPrice = parseFloat(price.replace(/,/g, ""));
+      const parsedFees = Math.abs(parseFloat(commission.replace(/,/g, ""))) + Math.abs(parseFloat(feeTax.replace(/,/g, "")));
+      const parsedNet = parseFloat(netAmount.replace(/,/g, ""));
+      
+      // Convert date from MM/DD/YYYY to YYYY-MM-DD
+      const [mm, dd, yyyy] = tradeDate.split("/");
+      const isoDate = `${yyyy}-${mm}-${dd}`;
+      
+      orders.push({
+        symbol,
+        date: isoDate,
+        action: action === "B" ? "Buy" : "Sell",
+        quantity: absQty,
+        price: parsedPrice,
+        fees: parsedFees,
+        netAmount: parsedNet,
+        gross: parseFloat(gross.replace(/,/g, ""))
+      });
+    }
+    return orders;
+  };
+
+  const groupWebullTrades = (orders) => {
+    // Group by symbol + date
+    const groups = {};
+    orders.forEach(o => {
+      const key = `${o.symbol}|${o.date}`;
+      if (!groups[key]) groups[key] = { symbol: o.symbol, date: o.date, buys: [], sells: [] };
+      if (o.action === "Buy") groups[key].buys.push(o);
+      else groups[key].sells.push(o);
+    });
+
+    const trades = [];
+    Object.values(groups).forEach(g => {
+      const totalBuyQty = g.buys.reduce((s, b) => s + b.quantity, 0);
+      const totalBuyValue = g.buys.reduce((s, b) => s + (b.quantity * b.price), 0);
+      const totalBuyFees = g.buys.reduce((s, b) => s + b.fees, 0);
+      const avgBuyPrice = totalBuyQty > 0 ? totalBuyValue / totalBuyQty : 0;
+
+      const totalSellQty = g.sells.reduce((s, b) => s + b.quantity, 0);
+      const totalSellValue = g.sells.reduce((s, b) => s + (b.quantity * b.price), 0);
+      const totalSellFees = g.sells.reduce((s, b) => s + b.fees, 0);
+      const avgSellPrice = totalSellQty > 0 ? totalSellValue / totalSellQty : 0;
+
+      const totalFees = totalBuyFees + totalSellFees;
+      const qty = Math.min(totalBuyQty, totalSellQty);
+      const isClosed = totalBuyQty > 0 && totalSellQty > 0;
+
+      if (qty > 0) {
+        const direction = g.buys[0]?.date <= g.sells[0]?.date ? "Long" : "Short";
+        const entryPrice = direction === "Long" ? avgBuyPrice : avgSellPrice;
+        const exitPrice = direction === "Long" ? avgSellPrice : avgBuyPrice;
+        const pnl = direction === "Long"
+          ? (exitPrice - entryPrice) * qty - totalFees
+          : (entryPrice - exitPrice) * qty - totalFees;
+
+        trades.push({
+          id: Date.now() + Math.random(),
+          date: g.date,
+          ticker: g.symbol,
+          assetType: "Stock",
+          direction,
+          status: isClosed ? "Closed" : "Open",
+          entryPrice: entryPrice.toFixed(4),
+          exitPrice: isClosed ? exitPrice.toFixed(4) : "",
+          quantity: String(qty),
+          fees: totalFees.toFixed(2),
+          pnl: isClosed ? parseFloat(pnl.toFixed(2)) : null,
+          notes: `Webull import: ${g.buys.length} buy${g.buys.length !== 1 ? "s" : ""}, ${g.sells.length} sell${g.sells.length !== 1 ? "s" : ""}`,
+          strategy: "Day Trade",
+          timeframe: "Day Trade",
+          account: targetAccount || "",
+          tradeStrategy: "",
+          playbook: "",
+          emotions: [],
+          optionsStrategyType: "",
+          legs: [],
+        });
+      }
+    });
+
+    return trades.sort((a, b) => new Date(b.date) - new Date(a.date));
+  };
+
   // ── IMPORT: Build preview ──
   const buildPreview = () => {
     if (!csvData) return;
@@ -8672,8 +8817,8 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
           <div onClick={()=>setMode("import")} style={{ background:"var(--tp-panel)", border:"1px solid rgba(74,222,128,0.15)", borderRadius:14, padding:"32px 24px", cursor:"pointer", textAlign:"center", transition:"border-color 0.2s" }} onMouseEnter={e=>e.currentTarget.style.borderColor="rgba(74,222,128,0.4)"} onMouseLeave={e=>e.currentTarget.style.borderColor="rgba(74,222,128,0.15)"}>
             <Upload size={36} color="#4ade80" style={{ margin:"0 auto 14px", display:"block" }}/>
             <div style={{ fontSize:16, fontWeight:700, color:"var(--tp-text)", marginBottom:6 }}>Import Trades</div>
-            <div style={{ fontSize:12, color:"var(--tp-muted)", lineHeight:1.5 }}>Upload a CSV from your broker. Smart auto-pairing matches buys with sells and calculates P&L automatically.</div>
-            <div style={{ fontSize:10, color:"var(--tp-faintest)", marginTop:10 }}>Supports: Webull, Schwab, TD/thinkorswim, IBKR, Fidelity, and generic CSV</div>
+            <div style={{ fontSize:12, color:"var(--tp-muted)", lineHeight:1.5 }}>Upload a CSV or broker PDF statement. Smart auto-pairing matches buys with sells and calculates P&L automatically.</div>
+            <div style={{ fontSize:10, color:"var(--tp-faintest)", marginTop:10 }}>Supports: CSV (Webull, Schwab, TD, IBKR, Fidelity) + Webull PDF Statements</div>
           </div>
           <div onClick={()=>setMode("export")} style={{ background:"var(--tp-panel)", border:"1px solid rgba(96,165,250,0.15)", borderRadius:14, padding:"32px 24px", cursor:"pointer", textAlign:"center", transition:"border-color 0.2s" }} onMouseEnter={e=>e.currentTarget.style.borderColor="rgba(96,165,250,0.4)"} onMouseLeave={e=>e.currentTarget.style.borderColor="rgba(96,165,250,0.15)"}>
             <Download size={36} color="#60a5fa" style={{ margin:"0 auto 14px", display:"block" }}/>
@@ -8750,17 +8895,17 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
               <div
                 onDragOver={e=>{e.preventDefault();setDragOver(true);}}
                 onDragLeave={()=>setDragOver(false)}
-                onDrop={e=>{e.preventDefault();setDragOver(false);handleFileUpload(e.dataTransfer.files[0]);}}
+                onDrop={e=>{e.preventDefault();setDragOver(false);const f=e.dataTransfer.files[0];if(f?.name?.toLowerCase().endsWith('.pdf'))handlePDFUpload(f);else handleFileUpload(f);}}
                 onClick={()=>document.getElementById("csv-upload-input")?.click()}
                 style={{
                   border:`2px dashed ${dragOver ? "#4ade80" : "var(--tp-border-l)"}`,
                   borderRadius:12, padding:"36px 20px", textAlign:"center", cursor:"pointer",
                   background: dragOver ? "rgba(74,222,128,0.06)" : "var(--tp-card)", transition:"all 0.2s"
                 }}>
-                <input id="csv-upload-input" type="file" accept=".csv,.tsv,.txt" onChange={e=>handleFileUpload(e.target.files[0])} style={{ display:"none" }}/>
+                <input id="csv-upload-input" type="file" accept=".csv,.tsv,.txt,.pdf" onChange={e=>{const f=e.target.files[0];if(f?.name?.toLowerCase().endsWith('.pdf'))handlePDFUpload(f);else handleFileUpload(f);}} style={{ display:"none" }}/>
                 <FileText size={32} color={dragOver?"#4ade80":"#5c6070"} style={{ margin:"0 auto 12px", display:"block" }}/>
-                <div style={{ fontSize:14, color: dragOver ? "#4ade80" : "#8a8f9e", marginBottom:4 }}>Drop CSV file here or click to upload</div>
-                <div style={{ fontSize:11, color:"var(--tp-faintest)" }}>Supports .csv, .tsv, and .txt files</div>
+                <div style={{ fontSize:14, color: dragOver ? "#4ade80" : "#8a8f9e", marginBottom:4 }}>Drop CSV or PDF file here or click to upload</div>
+                <div style={{ fontSize:11, color:"var(--tp-faintest)" }}>Supports .csv, .tsv, .txt, and .pdf (Webull statements)</div>
               </div>
 
               <div style={{ display:"flex", justifyContent:"flex-end", marginTop:14 }}>
@@ -8884,7 +9029,7 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
               </div>
 
               <div style={{ display:"flex", justifyContent:"space-between" }}>
-                <button onClick={()=>setStep(2)} style={{ padding:"8px 16px", borderRadius:8, border:"1px solid rgba(255,255,255,0.12)", background:"transparent", color:"var(--tp-muted)", cursor:"pointer", fontSize:12 }}>← Back to Mapping</button>
+                <button onClick={()=>setStep(csvFormat === "pdf" ? 1 : 2)} style={{ padding:"8px 16px", borderRadius:8, border:"1px solid rgba(255,255,255,0.12)", background:"transparent", color:"var(--tp-muted)", cursor:"pointer", fontSize:12 }}>{csvFormat === "pdf" ? "← Back" : "← Back to Mapping"}</button>
                 <button onClick={executeImport} style={{ display:"flex", alignItems:"center", gap:7, padding:"9px 24px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#059669,#34d399)", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:600, boxShadow:"0 4px 14px rgba(5,150,105,0.3)" }}><Check size={14}/> Import {importPreview.length} Trades</button>
               </div>
             </div>
