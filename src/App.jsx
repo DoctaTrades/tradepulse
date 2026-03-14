@@ -7675,12 +7675,13 @@ function ReportsTab({ trades, wheelTrades, accountBalances, customFields, theme,
           </>}
 
           {/* Trade Table */}
-          {(reportType === "summary" || reportType === "recap") && <>
+          {/* Trade Detail Table - all report types */}
+          {filtered.length > 0 && <>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#1a1a2e", marginBottom: 10, paddingBottom: 5, borderBottom: "1px solid #e8e8f0" }}>Trade Detail</div>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, marginBottom: 20 }}>
               <thead>
                 <tr>
-                  {["Date","Ticker","Type","Direction","Strategy","Entry","Exit","P&L","Notes"].map(h => (
+                  {["Entry","Exit","Ticker","Type","Dir","Strategy","Entry $","Exit $","P&L","Notes"].map(h => (
                     <th key={h} style={{ textAlign: h === "P&L" ? "right" : "left", padding: "6px 8px", background: "#f8f9fc", borderBottom: "2px solid #e8e8f0", fontSize: 8, fontWeight: 600, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 0.5 }}>{h}</th>
                   ))}
                 </tr>
@@ -7688,23 +7689,36 @@ function ReportsTab({ trades, wheelTrades, accountBalances, customFields, theme,
               <tbody>
                 {filtered.slice(0, 100).map(t => {
                   const strat = t.optionsStrategyType || t.tradeStrategy || t.strategy || "";
-                  const entry = t.assetType === "Options" ? (t.legs?.[0]?.entryPremium ? `$${t.legs[0].entryPremium}` : "") : (t.entryPrice || "");
-                  const exit = t.assetType === "Options" ? (t.legs?.[0]?.exitPremium ? `$${t.legs[0].exitPremium}` : "") : (t.exitPrice || "");
+                  let entryStr = "", exitStr = "";
+                  if (t.assetType === "Options" && t.legs?.length) {
+                    entryStr = t.legs.map(l => `${l.action === "Buy" ? "B" : "S"} ${l.strike || ""}${(l.type||"C")[0]} @${l.entryPremium || "?"}`).join(" / ");
+                    exitStr = t.legs.map(l => {
+                      const exits = [];
+                      if (l.exitPremium) exits.push(`@${l.exitPremium}`);
+                      if (l.rolls?.length) exits.push(`${l.rolls.length}R`);
+                      return exits.join("+") || "open";
+                    }).join(" / ");
+                  } else {
+                    entryStr = t.entryPrice || "";
+                    exitStr = t.exitPrice || "";
+                  }
+                  const exitDate = t.exitDate || t.date;
                   return (
                     <tr key={t.id}>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, fontSize: 10, color: "#374151" }}>{t.date?.slice(5)}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontWeight: 500, fontSize: 9, color: "#374151" }}>{t.date?.slice(5)}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontWeight: 500, fontSize: 9, color: "#374151" }}>{exitDate !== t.date ? exitDate?.slice(5) : "—"}</td>
                       <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontWeight: 700, color: "#1a1a2e" }}>{t.ticker}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", color: "#374151" }}>{t.assetType}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", color: "#374151", fontSize: 9 }}>{t.assetType}</td>
                       <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5" }}>
-                        <span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 8, fontSize: 8, fontWeight: 600, background: t.direction === "Long" ? "#d1fae5" : "#fee2e2", color: t.direction === "Long" ? "#059669" : "#dc2626" }}>{t.direction}</span>
+                        <span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 8, fontSize: 8, fontWeight: 600, background: t.direction === "Long" ? "#d1fae5" : "#fee2e2", color: t.direction === "Long" ? "#059669" : "#dc2626" }}>{t.direction === "Long" ? "L" : "S"}</span>
                       </td>
                       <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5" }}>
-                        {strat && <span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 8, fontSize: 8, fontWeight: 600, background: "#e0e7ff", color: "#4338ca" }}>{strat.length > 16 ? strat.slice(0, 16) + "…" : strat}</span>}
+                        {strat && <span style={{ display: "inline-block", padding: "1px 6px", borderRadius: 8, fontSize: 8, fontWeight: 600, background: "#e0e7ff", color: "#4338ca" }}>{strat.length > 18 ? strat.slice(0, 18) + "…" : strat}</span>}
                       </td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "#374151" }}>{entry}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: "#374151" }}>{exit}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: "#374151", maxWidth: 140 }}>{entryStr}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: "#374151", maxWidth: 140 }}>{exitStr}</td>
                       <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, textAlign: "right", color: t.pnl >= 0 ? "#059669" : "#dc2626" }}>{fmtD(t.pnl)}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontSize: 9, color: "#9ca3af", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.notes || ""}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #f0f0f5", fontSize: 9, color: "#9ca3af", maxWidth: 200 }}>{t.notes || ""}</td>
                     </tr>
                   );
                 })}
