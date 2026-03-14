@@ -1870,7 +1870,7 @@ function RiskCalculator({ theme, accountBalances, futuresSettings, customFields,
   );
 }
 
-function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, onSavePrefs, wheelTrades, cashTransactions, dividends, hideBalances, setHideBalances }) {
+function Dashboard({ trades, customFields, accountBalances, theme, logo, banner, dashWidgets, futuresSettings, prefs, onSavePrefs, wheelTrades, cashTransactions, dividends, hideBalances, setHideBalances, onNavigate, onNewTrade }) {
   const widgetConfig = useMemo(() => {
     if (!dashWidgets || dashWidgets.length === 0) return DEFAULT_DASH_WIDGETS;
     const merged = [];
@@ -2166,6 +2166,38 @@ function Dashboard({ trades, customFields, accountBalances, theme, logo, banner,
 
   return (
     <div style={{ display:"flex", flexDirection:"column" }}>
+      {/* ═══════ FIRST-TIME WELCOME (no trades) ═══════ */}
+      {trades.length === 0 && (
+        <div style={{ maxWidth:640, margin:"40px auto", textAlign:"center" }}>
+          <div style={{ fontSize:48, marginBottom:16 }}>📊</div>
+          <div style={{ fontSize:24, fontWeight:800, color:theme.text, marginBottom:8 }}>Welcome to TradePulse</div>
+          <div style={{ fontSize:14, color:theme.textMuted, lineHeight:1.7, marginBottom:32, maxWidth:480, margin:"0 auto 32px" }}>Your personal trading journal. Track trades, analyze performance, and grow as a trader. Get started in three easy steps.</div>
+          
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:16, marginBottom:32 }}>
+            <div style={{ background:theme.panelBg, border:`1px solid ${theme.panelBorder}`, borderRadius:12, padding:"20px 16px" }}>
+              <div style={{ width:36, height:36, borderRadius:10, background:"rgba(99,102,241,0.12)", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 12px" }}><span style={{ fontSize:16, fontWeight:800, color:"#a5b4fc" }}>1</span></div>
+              <div style={{ fontSize:13, fontWeight:700, color:theme.text, marginBottom:4 }}>Set Up Accounts</div>
+              <div style={{ fontSize:11, color:theme.textFaint, lineHeight:1.5 }}>Go to Settings → Account Balances and add your starting capital</div>
+            </div>
+            <div style={{ background:theme.panelBg, border:`1px solid ${theme.panelBorder}`, borderRadius:12, padding:"20px 16px" }}>
+              <div style={{ width:36, height:36, borderRadius:10, background:"rgba(74,222,128,0.12)", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 12px" }}><span style={{ fontSize:16, fontWeight:800, color:"#4ade80" }}>2</span></div>
+              <div style={{ fontSize:13, fontWeight:700, color:theme.text, marginBottom:4 }}>Import or Log Trades</div>
+              <div style={{ fontSize:11, color:theme.textFaint, lineHeight:1.5 }}>Import from your broker (CSV or PDF) or log trades manually</div>
+            </div>
+            <div style={{ background:theme.panelBg, border:`1px solid ${theme.panelBorder}`, borderRadius:12, padding:"20px 16px" }}>
+              <div style={{ width:36, height:36, borderRadius:10, background:"rgba(234,179,8,0.12)", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 12px" }}><span style={{ fontSize:16, fontWeight:800, color:"#eab308" }}>3</span></div>
+              <div style={{ fontSize:13, fontWeight:700, color:theme.text, marginBottom:4 }}>Track & Improve</div>
+              <div style={{ fontSize:11, color:theme.textFaint, lineHeight:1.5 }}>Review your stats, set goals, and refine your edge over time</div>
+            </div>
+          </div>
+
+          <div style={{ display:"flex", gap:12, justifyContent:"center" }}>
+            <button onClick={()=>onNavigate && onNavigate("settings")} style={{ display:"flex", alignItems:"center", gap:8, padding:"12px 24px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#059669,#34d399)", color:"#fff", cursor:"pointer", fontSize:14, fontWeight:600, boxShadow:"0 4px 14px rgba(5,150,105,0.3)" }}><Upload size={16}/> Import from Broker</button>
+            <button onClick={()=>onNewTrade && onNewTrade()} style={{ display:"flex", alignItems:"center", gap:8, padding:"12px 24px", borderRadius:10, border:"1px solid rgba(99,102,241,0.4)", background:"rgba(99,102,241,0.08)", color:"#a5b4fc", cursor:"pointer", fontSize:14, fontWeight:600 }}><Plus size={16}/> Log First Trade</button>
+          </div>
+        </div>
+      )}
+
       {/* ═══════ PERSONALIZED HEADER ═══════ */}
       {(logo || banner) && (
         <div style={{ display:"flex", alignItems:"center", gap:16, marginBottom:20, padding:"12px 0", overflow:"hidden", borderRadius:12, order:-1 }}>
@@ -9816,7 +9848,7 @@ function TradePulseApp({ user, onSignOut }) {
       </>}
 
       <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
-        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} onSavePrefs={setPrefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} dividends={dividends} hideBalances={hideBalances} setHideBalances={setHideBalances}/>}
+        {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} onSavePrefs={setPrefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} dividends={dividends} hideBalances={hideBalances} setHideBalances={setHideBalances} onNavigate={setTab} onNewTrade={()=>{setEditingTrade(null);setShowTradeModal(true);}}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
         {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} prefs={prefs}/>}
         {tab==="holdings" && <HoldingsTab trades={trades} accountBalances={accountBalances} onEditTrade={t=>{setEditingTrade(t);setShowTradeModal(true);}} theme={theme} dividends={dividends} onSaveDividends={setDividends} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} onStartWheel={(ticker, account, shares, avgPrice) => {
