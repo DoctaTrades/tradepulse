@@ -7445,11 +7445,11 @@ function ReportsTab({ trades, wheelTrades, accountBalances, customFields, theme,
       if (t.date < fromDate || t.date > toDate) return false;
       if (assetFilter !== "All" && t.assetType !== assetFilter) return false;
       if (strategyFilter !== "All") {
-        const strat = t.optionsStrategyType || t.tradeStrategy || t.strategy || "";
+        const allStrats = [t.optionsStrategyType, t.tradeStrategy, t.strategy, t.playbook].filter(Boolean).join(" ").toLowerCase();
         if (strategyFilter === "Premium") {
-          const premStrats = ["Wheel Strategy","PMCC / Diagonal","Diagonal","Calendar Press","Calendar","Vertical Spread","Iron Condor","Credit Spread"];
-          if (!premStrats.some(ps => strat.includes(ps)) && !["CSP","CC"].includes(t.type)) return false;
-        } else if (!strat.toLowerCase().includes(strategyFilter.toLowerCase())) return false;
+          const premStrats = ["wheel strategy","pmcc / diagonal","diagonal","calendar press","calendar","vertical spread","iron condor","credit spread"];
+          if (!premStrats.some(ps => allStrats.includes(ps)) && !["CSP","CC"].includes(t.type)) return false;
+        } else if (!allStrats.includes(strategyFilter.toLowerCase())) return false;
       }
       return true;
     }).sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -7472,7 +7472,7 @@ function ReportsTab({ trades, wheelTrades, accountBalances, customFields, theme,
     // By strategy
     const byStrategy = {};
     filtered.forEach(t => {
-      const s = t.optionsStrategyType || t.tradeStrategy || t.strategy || "Other";
+      const s = t.tradeStrategy || (t.optionsStrategyType && t.optionsStrategyType !== "Single Leg" ? t.optionsStrategyType : "") || t.playbook || t.strategy || "Other";
       if (!byStrategy[s]) byStrategy[s] = { name: s, trades: 0, pnl: 0, wins: 0 };
       byStrategy[s].trades++;
       byStrategy[s].pnl += t.pnl || 0;
@@ -7499,8 +7499,9 @@ function ReportsTab({ trades, wheelTrades, accountBalances, customFields, theme,
   const allStrategies = useMemo(() => {
     const s = new Set();
     trades.forEach(t => {
-      if (t.optionsStrategyType) s.add(t.optionsStrategyType);
+      if (t.optionsStrategyType && t.optionsStrategyType !== "Single Leg") s.add(t.optionsStrategyType);
       if (t.tradeStrategy) s.add(t.tradeStrategy);
+      if (t.playbook) s.add(t.playbook);
     });
     return [...s].sort();
   }, [trades]);
