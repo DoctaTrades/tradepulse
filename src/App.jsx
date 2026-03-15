@@ -9599,19 +9599,11 @@ function TradePulseApp({ user, onSignOut }) {
 
       /* ─── MOBILE RESPONSIVE ─── */
       @media (max-width: 768px) {
-        /* Header — show hamburger, hide desktop tabs */
-        .tp-header-inner { height: 48px !important; padding: 0 12px !important; }
-        .tp-brand { display: none !important; }
-        .tp-tabs { display: none !important; }
+        /* Sidebar — hide on mobile */
+        .tp-sidebar { display: none !important; }
         .tp-hamburger { display: flex !important; }
-        .tp-mobile-tab-label { display: block !important; }
-        .tp-signout-btn { display: none !important; }
-        .tp-sync-label span:last-child { display: none; }
-        .tp-header-right .tp-new-trade-text { display: none; }
-
-        /* Mobile menu */
-        .tp-mobile-overlay { display: block !important; }
-        .tp-mobile-menu { display: flex !important; }
+        .tp-topbar { padding: 10px 14px !important; }
+        .tp-new-trade-text { display: none; }
 
         /* Main content */
         .tp-content { padding: 14px 10px !important; }
@@ -9774,56 +9766,113 @@ function TradePulseApp({ user, onSignOut }) {
   const handleTradeDelete = useCallback(id => setTrades(prev=>prev.filter(t=>t.id!==id)), []);
   const promoteTrade = prefill => { setEditingTrade(emptyTrade(prefill)); setShowTradeModal(true); };
 
-  const ALL_TABS = [{ id:"dashboard", label:"Dashboard", icon:Home },{ id:"journal", label:"Journal", icon:Clipboard },{ id:"goals", label:"Goals", icon:Target },{ id:"holdings", label:"Holdings", icon:Briefcase },{ id:"review", label:"Review", icon:Shield },{ id:"playbook", label:"Playbook", icon:BookOpen },{ id:"wheel", label:"Premium", icon:DollarSign },{ id:"watchlist", label:"Watchlist", icon:Crosshair },{ id:"log", label:"Trade Log", icon:List },{ id:"reports", label:"Reports", icon:FileText },{ id:"settings", label:"Settings", icon:Settings }];
-  const tabs = useMemo(() => {
-    if (!prefs.tabOrder || prefs.tabOrder.length === 0) return ALL_TABS;
-    const ordered = [];
-    prefs.tabOrder.forEach(id => { const t = ALL_TABS.find(dt => dt.id === id); if (t) ordered.push(t); });
-    ALL_TABS.forEach(t => { if (!ordered.find(o => o.id === t.id)) ordered.push(t); });
-    return ordered;
-  }, [prefs.tabOrder]);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  const headerBtn = tab==="watchlist" || tab==="wheel" || tab==="settings" || tab==="playbook" || tab==="review" || tab==="holdings" || tab==="journal" || tab==="goals" || tab==="reports" ? null : (
-    <button onClick={()=>{setEditingTrade(null);setShowTradeModal(true);}} style={{ display:"flex", alignItems:"center", gap:7, padding:"8px 18px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:600, boxShadow:"0 4px 14px rgba(99,102,241,0.3)", transition:"transform 0.15s, box-shadow 0.15s" }}
-      onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow="0 6px 20px rgba(99,102,241,0.4)";}} onMouseLeave={e=>{e.currentTarget.style.transform="translateY(0)";e.currentTarget.style.boxShadow="0 4px 14px rgba(99,102,241,0.3)";}}
-    ><Plus size={15}/> New Trade</button>
-  );
+  const SIDEBAR_SECTIONS = [
+    { label: "Core", items: [
+      { id:"dashboard", label:"Dashboard", icon:Home },
+      { id:"journal", label:"Journal", icon:Clipboard },
+      { id:"log", label:"Trade Log", icon:List },
+    ]},
+    { label: "Tracking", items: [
+      { id:"holdings", label:"Holdings", icon:Briefcase },
+      { id:"wheel", label:"Premium", icon:DollarSign },
+      { id:"watchlist", label:"Watchlist", icon:Crosshair },
+    ]},
+    { label: "Analysis", items: [
+      { id:"goals", label:"Goals", icon:Target },
+      { id:"review", label:"Review", icon:Shield },
+      { id:"reports", label:"Reports", icon:FileText },
+    ]},
+    { label: "Tools", items: [
+      { id:"playbook", label:"Playbook", icon:BookOpen },
+    ]},
+  ];
 
-  const activeTab = tabs.find(t => t.id === tab);
+  const ALL_TABS = SIDEBAR_SECTIONS.flatMap(s => s.items);
+  const activeTab = ALL_TABS.find(t => t.id === tab) || { id:"settings", label:"Settings", icon:Settings };
+
+  // Quick stats for sidebar
+  const sidebarStats = useMemo(() => {
+    const closed = trades.filter(t => t.pnl !== null);
+    const totalPnL = closed.reduce((s, t) => s + (t.pnl || 0), 0);
+    const wins = closed.filter(t => t.pnl > 0).length;
+    const winRate = closed.length > 0 ? (wins / closed.length * 100) : 0;
+    return { totalPnL, winRate };
+  }, [trades]);
 
   return (
-    <div className="tp-root" style={{ minHeight:"100vh", background:theme.bg, color:theme.text, fontFamily:"'Inter', system-ui, sans-serif" }}>
-      <div style={{ background:theme.headerBg, borderBottom:`1px solid ${theme.headerBorder}`, padding:"0 24px", position:"sticky", top:0, zIndex:50, backdropFilter:"blur(10px)" }}>
-        <div className="tp-header-inner" style={{ maxWidth:1100, margin:"0 auto", display:"flex", alignItems:"center", justifyContent:"space-between", height:58, position:"relative" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:24 }}>
-            {/* Hamburger button — mobile only */}
-            <button className="tp-hamburger" onClick={()=>setMobileMenuOpen(p=>!p)} style={{ display:"none", alignItems:"center", justifyContent:"center", width:36, height:36, borderRadius:8, border:"none", background:"transparent", color:theme.textMuted, cursor:"pointer", padding:0 }}>
-              {mobileMenuOpen ? <X size={20}/> : <Menu size={20}/>}
-            </button>
-            {/* Active tab label — mobile only */}
-            <span className="tp-mobile-tab-label" style={{ display:"none", fontSize:15, fontWeight:700, color:theme.text }}>{activeTab?.label || "Dashboard"}</span>
-            <div className="tp-brand" style={{ display:"flex", alignItems:"center", gap:9 }}>
-              <div style={{ width:30, height:30, borderRadius:8, background:"linear-gradient(135deg,#6366f1,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center" }}><BookOpen size={16} color="#fff"/></div>
-              <span style={{ fontSize:17, fontWeight:700, letterSpacing:-0.5, color:theme.text }}>TradePulse</span>
+    <div className="tp-root" style={{ minHeight:"100vh", background:theme.bg, color:theme.text, fontFamily:"'Inter', system-ui, sans-serif", display:"flex" }}>
+      {/* ═══════ SIDEBAR — desktop ═══════ */}
+      <div className="tp-sidebar" style={{ width: sidebarCollapsed ? 56 : 210, background:theme.bgSecondary, borderRight:`1px solid ${theme.border}`, display:"flex", flexDirection:"column", flexShrink:0, overflow:"hidden", transition:"width 0.2s", position:"sticky", top:0, height:"100vh" }}>
+        {/* Logo */}
+        <div style={{ padding: sidebarCollapsed ? "16px 12px" : "18px 16px 14px", borderBottom:`1px solid ${theme.border}`, display:"flex", alignItems:"center", gap:10, cursor:"pointer" }} onClick={()=>setSidebarCollapsed(!sidebarCollapsed)}>
+          <div style={{ width:30, height:30, borderRadius:8, background:"linear-gradient(135deg,#6366f1,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><BookOpen size={15} color="#fff"/></div>
+          {!sidebarCollapsed && <span style={{ fontSize:16, fontWeight:800, background:"linear-gradient(135deg,#a5b4fc,#c4b5fd)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", whiteSpace:"nowrap" }}>TradePulse</span>}
+        </div>
+
+        {/* Quick Stats */}
+        {!sidebarCollapsed && (
+          <div style={{ padding:"10px 12px", borderBottom:`1px solid ${theme.border}`, display:"flex", gap:6 }}>
+            <div style={{ flex:1, background:"rgba(255,255,255,0.03)", borderRadius:6, padding:"5px 8px" }}>
+              <div style={{ fontSize:8, color:theme.textFaintest, fontWeight:600 }}>P&L</div>
+              <div style={{ fontSize:12, fontWeight:700, fontFamily:"'JetBrains Mono',monospace", color: sidebarStats.totalPnL >= 0 ? "#4ade80" : "#f87171" }}>{sidebarStats.totalPnL >= 0 ? "+" : ""}${Math.abs(sidebarStats.totalPnL).toLocaleString("en-US",{maximumFractionDigits:0})}</div>
             </div>
-            <div className="tp-tabs" style={{ display:"flex", gap:4 }}>
-              {tabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)} className="tp-tab-btn" style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 14px", borderRadius:7, border:"none", background:tab===t.id?theme.activeBg:"transparent", color:tab===t.id?"#a5b4fc":theme.textFaint, cursor:"pointer", fontSize:13, fontWeight:500, transition:"all 0.2s" }}><t.icon size={14}/> <span>{t.label}</span></button>)}
+            <div style={{ flex:1, background:"rgba(255,255,255,0.03)", borderRadius:6, padding:"5px 8px" }}>
+              <div style={{ fontSize:8, color:theme.textFaintest, fontWeight:600 }}>WIN</div>
+              <div style={{ fontSize:12, fontWeight:700, fontFamily:"'JetBrains Mono',monospace", color:"#60a5fa" }}>{sidebarStats.winRate.toFixed(1)}%</div>
             </div>
           </div>
-          <div className="tp-header-right" style={{ display:"flex", alignItems:"center", gap:10 }}>
-            {syncStatus === "saving" && <span className="tp-sync-label" style={{ fontSize:10, color:"#eab308", display:"flex", alignItems:"center", gap:4 }}><span style={{ width:6, height:6, borderRadius:3, background:"#eab308", display:"inline-block", animation:"spin 1s linear infinite" }}/> Syncing</span>}
-            {syncStatus === "saved" && <span className="tp-sync-label" style={{ fontSize:10, color:"#4ade80", display:"flex", alignItems:"center", gap:4 }}><Check size={10}/> Saved</span>}
-            <button className="tp-signout-btn" onClick={onSignOut} style={{ padding:"4px 10px", borderRadius:6, border:`1px solid ${theme.borderLight}`, background:"transparent", color:theme.textFaint, cursor:"pointer", fontSize:10, fontWeight:600 }} title={user.email}>Sign Out</button>
-            {headerBtn}
-          </div>
+        )}
+
+        {/* Nav sections */}
+        <div style={{ flex:1, overflowY:"auto", padding:"8px 0" }}>
+          {SIDEBAR_SECTIONS.map(section => (
+            <div key={section.label}>
+              {!sidebarCollapsed && <div style={{ padding:"12px 18px 4px", fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:1.2, fontWeight:700 }}>{section.label}</div>}
+              {sidebarCollapsed && <div style={{ height:1, background:theme.border, margin:"6px 8px" }}/>}
+              {section.items.map(t => (
+                <button key={t.id} onClick={()=>{setTab(t.id);setMobileMenuOpen(false);}} title={sidebarCollapsed ? t.label : undefined} style={{
+                  display:"flex", alignItems:"center", gap:10, width:"calc(100% - 8px)", margin:"1px 4px",
+                  padding: sidebarCollapsed ? "9px 0" : "8px 14px", justifyContent: sidebarCollapsed ? "center" : "flex-start",
+                  borderRadius:8, border:"none", cursor:"pointer", fontSize:13, fontWeight: tab===t.id ? 600 : 500, transition:"all 0.15s",
+                  background: tab===t.id ? theme.activeBg : "transparent",
+                  color: tab===t.id ? "#a5b4fc" : theme.textFaint
+                }}>
+                  <t.icon size={16}/>
+                  {!sidebarCollapsed && <span style={{ whiteSpace:"nowrap" }}>{t.label}</span>}
+                  {!sidebarCollapsed && t.id === "log" && trades.length > 0 && <span style={{ marginLeft:"auto", fontSize:9, fontWeight:700, background:"rgba(74,222,128,0.12)", color:"#4ade80", padding:"2px 6px", borderRadius:10 }}>{trades.length}</span>}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        {/* Bottom — Settings + Sign Out */}
+        <div style={{ borderTop:`1px solid ${theme.border}`, padding:"8px 4px" }}>
+          <button onClick={()=>{setTab("settings");setMobileMenuOpen(false);}} style={{
+            display:"flex", alignItems:"center", gap:10, width:"calc(100% - 8px)", margin:"1px 4px",
+            padding: sidebarCollapsed ? "9px 0" : "8px 14px", justifyContent: sidebarCollapsed ? "center" : "flex-start",
+            borderRadius:8, border:"none", cursor:"pointer", fontSize:12, fontWeight: tab==="settings" ? 600 : 500,
+            background: tab==="settings" ? theme.activeBg : "transparent",
+            color: tab==="settings" ? "#a5b4fc" : theme.textFaint
+          }}>
+            <Settings size={16}/>
+            {!sidebarCollapsed && <span>Settings</span>}
+          </button>
+          {!sidebarCollapsed && (
+            <div style={{ padding:"8px 14px 4px" }}>
+              <div style={{ fontSize:10, color:theme.textFaintest, marginBottom:6, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{user.email}</div>
+              <button onClick={onSignOut} style={{ display:"flex", alignItems:"center", gap:6, width:"100%", padding:"6px 10px", borderRadius:6, border:`1px solid ${theme.borderLight}`, background:"transparent", color:theme.textFaint, cursor:"pointer", fontSize:10, fontWeight:600 }}>Sign Out</button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Mobile slide-out menu */}
+      {/* ═══════ MOBILE HAMBURGER OVERLAY ═══════ */}
       {mobileMenuOpen && <>
-        <div className="tp-mobile-overlay" onClick={()=>setMobileMenuOpen(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:60, display:"none" }}/>
-        <div className="tp-mobile-menu" style={{ position:"fixed", top:0, left:0, bottom:0, width:260, background:theme.bgSecondary, borderRight:`1px solid ${theme.border}`, zIndex:70, padding:"20px 0", display:"none", flexDirection:"column", boxShadow:"4px 0 30px rgba(0,0,0,0.4)" }}>
-          {/* Menu header */}
+        <div onClick={()=>setMobileMenuOpen(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:60 }}/>
+        <div style={{ position:"fixed", top:0, left:0, bottom:0, width:260, background:theme.bgSecondary, borderRight:`1px solid ${theme.border}`, zIndex:70, padding:"20px 0", display:"flex", flexDirection:"column", boxShadow:"4px 0 30px rgba(0,0,0,0.4)" }}>
           <div style={{ padding:"0 20px 18px", borderBottom:`1px solid ${theme.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
             <div style={{ display:"flex", alignItems:"center", gap:9 }}>
               <div style={{ width:28, height:28, borderRadius:7, background:"linear-gradient(135deg,#6366f1,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center" }}><BookOpen size={14} color="#fff"/></div>
@@ -9831,15 +9880,22 @@ function TradePulseApp({ user, onSignOut }) {
             </div>
             <button onClick={()=>setMobileMenuOpen(false)} style={{ background:"none", border:"none", color:theme.textFaint, cursor:"pointer", padding:4 }}><X size={18}/></button>
           </div>
-          {/* Tab list */}
           <div style={{ flex:1, overflowY:"auto", padding:"12px 10px" }}>
-            {tabs.map(t => (
-              <button key={t.id} onClick={()=>{setTab(t.id);setMobileMenuOpen(false);}} style={{ display:"flex", alignItems:"center", gap:12, width:"100%", padding:"12px 14px", borderRadius:10, border:"none", background:tab===t.id?theme.activeBg:"transparent", color:tab===t.id?"#a5b4fc":theme.textMuted, cursor:"pointer", fontSize:14, fontWeight:tab===t.id?600:500, marginBottom:2, transition:"all 0.15s" }}>
-                <t.icon size={16}/> {t.label}
-              </button>
+            {SIDEBAR_SECTIONS.map(section => (
+              <div key={section.label}>
+                <div style={{ padding:"12px 14px 4px", fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:1.2, fontWeight:700 }}>{section.label}</div>
+                {section.items.map(t => (
+                  <button key={t.id} onClick={()=>{setTab(t.id);setMobileMenuOpen(false);}} style={{ display:"flex", alignItems:"center", gap:12, width:"100%", padding:"10px 14px", borderRadius:10, border:"none", background:tab===t.id?theme.activeBg:"transparent", color:tab===t.id?"#a5b4fc":theme.textMuted, cursor:"pointer", fontSize:14, fontWeight:tab===t.id?600:500, marginBottom:2 }}>
+                    <t.icon size={16}/> {t.label}
+                  </button>
+                ))}
+              </div>
             ))}
+            <div style={{ padding:"12px 14px 4px", fontSize:9, color:theme.textFaintest, textTransform:"uppercase", letterSpacing:1.2, fontWeight:700 }}>System</div>
+            <button onClick={()=>{setTab("settings");setMobileMenuOpen(false);}} style={{ display:"flex", alignItems:"center", gap:12, width:"100%", padding:"10px 14px", borderRadius:10, border:"none", background:tab==="settings"?theme.activeBg:"transparent", color:tab==="settings"?"#a5b4fc":theme.textMuted, cursor:"pointer", fontSize:14, fontWeight:tab==="settings"?600:500, marginBottom:2 }}>
+              <Settings size={16}/> Settings
+            </button>
           </div>
-          {/* Menu footer */}
           <div style={{ padding:"14px 20px", borderTop:`1px solid ${theme.border}` }}>
             <div style={{ fontSize:11, color:theme.textFaintest, marginBottom:8, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{user.email}</div>
             <button onClick={()=>{onSignOut();setMobileMenuOpen(false);}} style={{ display:"flex", alignItems:"center", gap:6, width:"100%", padding:"9px 14px", borderRadius:8, border:`1px solid ${theme.borderLight}`, background:"transparent", color:theme.textFaint, cursor:"pointer", fontSize:12, fontWeight:600 }}>Sign Out</button>
@@ -9847,7 +9903,27 @@ function TradePulseApp({ user, onSignOut }) {
         </div>
       </>}
 
-      <div className="tp-content" style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
+      {/* ═══════ MAIN CONTENT AREA ═══════ */}
+      <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+        {/* Top bar — page title + actions */}
+        <div className="tp-topbar" style={{ padding:"12px 28px", borderBottom:`1px solid ${theme.border}`, display:"flex", justifyContent:"space-between", alignItems:"center", background:theme.bg, position:"sticky", top:0, zIndex:10 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+            <button className="tp-hamburger" onClick={()=>setMobileMenuOpen(p=>!p)} style={{ display:"none", alignItems:"center", justifyContent:"center", width:36, height:36, borderRadius:8, border:"none", background:"transparent", color:theme.textMuted, cursor:"pointer", padding:0 }}>
+              {mobileMenuOpen ? <X size={20}/> : <Menu size={20}/>}
+            </button>
+            <span style={{ fontSize:18, fontWeight:700, color:theme.text }}>{activeTab?.label || "Settings"}</span>
+            {syncStatus === "saving" && <span style={{ fontSize:10, color:"#eab308", display:"flex", alignItems:"center", gap:4 }}><span style={{ width:6, height:6, borderRadius:3, background:"#eab308", display:"inline-block", animation:"spin 1s linear infinite" }}/> Syncing</span>}
+            {syncStatus === "saved" && <span style={{ fontSize:10, color:"#4ade80", display:"flex", alignItems:"center", gap:4 }}><Check size={10}/> Saved</span>}
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <button onClick={()=>{setEditingTrade(null);setShowTradeModal(true);}} style={{ display:"flex", alignItems:"center", gap:7, padding:"7px 16px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", cursor:"pointer", fontSize:12, fontWeight:600, boxShadow:"0 2px 10px rgba(99,102,241,0.25)" }}>
+              <Plus size={14}/> <span className="tp-new-trade-text">New Trade</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable content */}
+        <div className="tp-content" style={{ flex:1, overflowY:"auto", padding:"24px 28px" }}>
         {tab==="dashboard" && <Dashboard trades={trades} customFields={customFields} accountBalances={accountBalances} theme={theme} logo={prefs.logo} banner={prefs.banner} dashWidgets={prefs.dashWidgets} futuresSettings={futuresSettings} prefs={prefs} onSavePrefs={setPrefs} wheelTrades={wheelTrades} cashTransactions={cashTransactions} dividends={dividends} hideBalances={hideBalances} setHideBalances={setHideBalances} onNavigate={setTab} onNewTrade={()=>{setEditingTrade(null);setShowTradeModal(true);}}/>}
         {tab==="journal" && <JournalTab journal={journal} onSave={setJournal} trades={trades} theme={theme}/>}
         {tab==="goals" && <GoalTracker goals={goals} onSave={setGoals} trades={trades} theme={theme} accounts={[...new Set([...Object.keys(accountBalances||{}), ...(customFields?.accounts||[])])]} prefs={prefs}/>}
@@ -9864,7 +9940,8 @@ function TradePulseApp({ user, onSignOut }) {
         {tab==="log" && <TradeLog trades={trades} onEdit={t=>{setEditingTrade(t);setShowTradeModal(true);}} onDelete={handleTradeDelete} theme={theme} prefs={prefs}/>}
         {tab==="reports" && <ReportsTab trades={trades} wheelTrades={wheelTrades} accountBalances={accountBalances} customFields={customFields} theme={theme} prefs={prefs}/>}
         {tab==="settings" && <SettingsTab futuresSettings={futuresSettings} onSaveFutures={setFuturesSettings} customFields={customFields} onSaveCustomFields={setCustomFields} accountBalances={accountBalances} onSaveAccountBalances={setAccountBalances} trades={trades} onSaveTrades={setTrades} prefs={prefs} onSavePrefs={setPrefs} theme={theme} wheelTrades={wheelTrades} cashTransactions={cashTransactions} onSaveCashTransactions={setCashTransactions} hideBalances={hideBalances}/>}
-      </div>
+        </div>{/* end scrollable content */}
+      </div>{/* end main area */}
       {showTradeModal && <TradeModal onSave={handleTradeSave} onClose={()=>{setShowTradeModal(false);setEditingTrade(null);}} editTrade={editingTrade} futuresSettings={futuresSettings} customFields={customFields} playbooks={playbooks} theme={theme} accountBalances={accountBalances}/>}
       {showMigration && <MigrationPrompt onMigrate={handleMigrate} onSkip={()=>setShowMigration(false)}/>}
     </div>
