@@ -8588,7 +8588,16 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
-        const pageText = content.items.map(item => item.str).join(" ");
+        let lastY = null;
+        let pageText = "";
+        for (const item of content.items) {
+          const y = item.transform ? item.transform[5] : null;
+          if (lastY !== null && y !== null && Math.abs(y - lastY) > 2) {
+            pageText += "\n";
+          }
+          pageText += item.str;
+          lastY = y;
+        }
         fullText += pageText + "\n";
       }
 
@@ -8613,45 +8622,77 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
 
   const parseWebullPDF = (text) => {
     const orders = [];
-    // Match patterns like: SYMBOL - CUSIP\nCOMPANY NAME DATE DATE B/S QTY PRICE GROSS COMM FEE NET
-    // The PDF text is concatenated so we need to find trade lines
-    const lines = text.split("\n").join(" ");
-    
-    // Find all trade entries - look for B or S followed by numbers
-    const symbolPattern = /([A-Z]{1,5})\s+-\s+[A-Z0-9]+\s+[\w\s&,.'()-]+?\s+(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})\s+(B|S)\s+(-?[\d,.]+)\s+([\d,.]+)\s+(-?[\d,.]+)\s+([\d,.]+)\s+(-?[\d,.]+)\s+(-?[\d,.]+)/g;
-    
-    let match;
-    while ((match = symbolPattern.exec(lines)) !== null) {
-      const [, symbol, tradeDate, , action, qty, price, gross, commission, feeTax, netAmount] = match;
-      const absQty = Math.abs(parseFloat(qty.replace(/,/g, "")));
-      const parsedPrice = parseFloat(price.replace(/,/g, ""));
-      const parsedFees = Math.abs(parseFloat(commission.replace(/,/g, ""))) + Math.abs(parseFloat(feeTax.replace(/,/g, "")));
-      const parsedNet = parseFloat(netAmount.replace(/,/g, ""));
-      
-      // Convert date from MM/DD/YYYY to YYYY-MM-DD
-      const [mm, dd, yyyy] = tradeDate.split("/");
-      const isoDate = `${yyyy}-${mm}-${dd}`;
-      
-      orders.push({
-        symbol,
-        date: isoDate,
-        action: action === "B" ? "Buy" : "Sell",
-        quantity: absQty,
-        price: parsedPrice,
-        fees: parsedFees,
-        netAmount: parsedNet,
-        gross: parseFloat(gross.replace(/,/g, ""))
-      });
+    const allLines = text.split("\n").map(l => l.trim()).filter(l => l);
+
+    let startIdx = -1, endIdx = allLines.length;
+    for (let i = 0; i < allLines.length; i++) {
+      if (allLines[i].includes("SECURITIES TRADING ACTIVITY")) startIdx = i;
+      if (startIdx > -1 && i > startIdx && allLines[i].startsWith("OPEN POSITIONS")) { endIdx = i; break; }
+    }
+    if (startIdx === -1) return orders;
+
+    const lines = allLines.slice(startIdx, endIdx);
+    const optionLineRe = /^([A-Z]{1,5})\s+(\d{6}[CP]\d+)\s+-\s+(\d{2}\/\d{2}\/\d{4})\s+\d{2}\/\d{2}\/\d{4}\s+(B|S|BTC|BTO|STO|STC)\s+(-?[\d,.]+)\s+([\d,.]+)\s+(-?[\d,.]+)\s+(-?[\d,.]+)\s+(-?[\d,.]+)\s+(-?[\d,.]+)/;
+    const stockSymRe = /^([A-Z]{1,5})\s+-\s+[A-Z0-9]+$/;
+    const dataLineRe = /(\d{2}\/\d{2}\/\d{4})\s+\d{2}\/\d{2}\/\d{4}\s+(B|S|BTC|BTO|STO|STC)\s+(-?[\d,.]+)\s+([\d,.]+)\s+(-?[\d,.]+)\s+(-?[\d,.]+)\s+(-?[\d,.]+)\s+(-?[\d,.]+)/;
+    const clean = (v) => parseFloat(v.replace(/,/g, ""));
+
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+
+      const optM = optionLineRe.exec(line);
+      if (optM) {
+        const [, symbol, optCode, tradeDate, action, qty, price, gross, comm, fee, net] = optM;
+        const [mm, dd, yyyy] = tradeDate.split("/");
+        orders.push({
+          symbol, optionSymbol: `${symbol} ${optCode}`, isOption: true,
+          date: `${yyyy}-${mm}-${dd}`,
+          action: ["B","BTO","BTC"].includes(action) ? "Buy" : "Sell",
+          rawAction: action,
+          quantity: Math.abs(clean(qty)), price: clean(price),
+          fees: Math.abs(clean(comm)) + Math.abs(clean(fee)),
+          netAmount: clean(net), gross: clean(gross),
+        });
+        i++; continue;
+      }
+
+      const stockM = stockSymRe.exec(line);
+      if (stockM) {
+        const symbol = stockM[1];
+        let found = false;
+        for (let j = 1; j <= 3 && (i + j) < lines.length; j++) {
+          const dataM = dataLineRe.exec(lines[i + j]);
+          if (dataM) {
+            const [, tradeDate, action, qty, price, gross, comm, fee, net] = dataM;
+            const [mm, dd, yyyy] = tradeDate.split("/");
+            orders.push({
+              symbol, optionSymbol: null, isOption: false,
+              date: `${yyyy}-${mm}-${dd}`,
+              action: ["B","BTO","BTC"].includes(action) ? "Buy" : "Sell",
+              rawAction: action,
+              quantity: Math.abs(clean(qty)), price: clean(price),
+              fees: Math.abs(clean(comm)) + Math.abs(clean(fee)),
+              netAmount: clean(net), gross: clean(gross),
+            });
+            i = i + j + 1; found = true; break;
+          }
+        }
+        if (!found) i++;
+        continue;
+      }
+      i++;
     }
     return orders;
   };
 
   const groupWebullTrades = (orders) => {
-    // Group by symbol + date
+    // Group by symbol (or optionSymbol for options) + date
     const groups = {};
     orders.forEach(o => {
-      const key = `${o.symbol}|${o.date}`;
-      if (!groups[key]) groups[key] = { symbol: o.symbol, date: o.date, buys: [], sells: [] };
+      const groupSymbol = o.optionSymbol || o.symbol;
+      const key = `${groupSymbol}|${o.date}`;
+      if (!groups[key]) groups[key] = { symbol: o.symbol, optionSymbol: o.optionSymbol, isOption: o.isOption, date: o.date, buys: [], sells: [] };
       if (o.action === "Buy") groups[key].buys.push(o);
       else groups[key].sells.push(o);
     });
@@ -8684,7 +8725,7 @@ function ImportExportManager({ trades, onSaveTrades, customFields, accountBalanc
           id: Date.now() + Math.random(),
           date: g.date,
           ticker: g.symbol,
-          assetType: "Stock",
+          assetType: g.isOption ? "Options" : "Stock",
           direction,
           status: isClosed ? "Closed" : "Open",
           entryPrice: entryPrice.toFixed(4),
